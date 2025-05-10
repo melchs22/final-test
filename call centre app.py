@@ -238,17 +238,17 @@ def main():
             with st.form("performance_form"):
                 agent = st.selectbox("Select Agent", agents)
                 data = {
-                    'attendance': st.number_input("Attendance (%)", min_value=0.0, max_value=100.0),
-                    'quality_score': st.number_input("Quality Score (%)", min_value=0.0, max_value=100.0),
-                    'product_knowledge': st.number_input("Product Knowledge (%)", min_value=0.0, max_value=100.0),
-                    'contact_success_rate': st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0),
-                    'onboarding': st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0),
-                    'reporting': st.number_input("Reporting (%)", min_value=0.0, max_value=100.0),
-                    'talk_time': st.number_input("CRM Talk Time (seconds)", min_value=0.0),
-                    'resolution_rate': st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0),
-                    'aht': st.number_input("Average Handle Time (seconds)", min_value=0.0),
-                    'csat': st.number_input("Customer Satisfaction (%)", min_value=0.0, max_value=100.0),
-                    'call_volume': st.number_input("Call Volume (calls)", min_value=0)
+                    'attendance': st.number_input("Attendance (%)", min_value=0.0, max_value=100.0, value=0.0),
+                    'quality_score': st.number_input("Quality Score (%)", min_value=0.0, max_value=100.0, value=0.0),
+                    'product_knowledge': st.number_input("Product Knowledge (%)", min_value=0.0, max_value=100.0, value=0.0),
+                    'contact_success_rate': st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0, value=0.0),
+                    'onboarding': st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0, value=0.0),
+                    'reporting': st.number_input("Reporting (%)", min_value=0.0, max_value=100.0, value=0.0),
+                    'talk_time': st.number_input("CRM Talk Time (seconds)", min_value=0.0, value=0.0),
+                    'resolution_rate': st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0, value=0.0),
+                    'aht': st.number_input("Average Handle Time (seconds)", min_value=0.0, value=0.0),
+                    'csat': st.number_input("Customer Satisfaction (%)", min_value=0.0, max_value=100.0, value=0.0),
+                    'call_volume': st.number_input("Call Volume (calls)", min_value=0, value=0)
                 }
                 if st.form_submit_button("Submit Performance"):
                     save_performance(agent, data)
@@ -293,23 +293,28 @@ def main():
         else:
             st.write("No performance data available. Contact your manager to input performance data.")
 
-        # Enhanced Goal Setting and Management
-        st.subheader("Set and Manage Your Goals")
-        st.write("DEBUG: Rendering Goal Setting")
-        with st.form("goal_form"):
+        # Input Your Goals (Modeled after Manager's Performance Input)
+        st.subheader("Input Your Goals")
+        st.write("DEBUG: Rendering Goal Input")
+        with st.form("goal_input_form"):
             st.write("Set New Goal")
-            metric = st.selectbox("Select Metric", metrics, key="new_goal_metric")
-            goal_value = st.number_input("Target Value", min_value=0.0, max_value=100.0 if metric != 'aht' else 1000.0, step=0.1)
-            if st.form_submit_button("Add Goal"):
+            metric = st.selectbox("Select Metric", metrics)
+            goal_value = st.number_input("Target Value", min_value=0.0, max_value=100.0 if metric != 'aht' else 1000.0, value=0.0, step=0.1)
+            if st.form_submit_button("Submit Goal"):
                 if metric == 'aht' and goal_value < 100:
                     st.error("AHT target should be realistic (e.g., 100-1000 seconds).")
                 elif metric != 'aht' and goal_value > 100:
                     st.error("Percentage metrics should be between 0 and 100.")
+                elif goal_value == 0.0:
+                    st.error("Target value cannot be zero.")
                 else:
                     save_goal(st.session_state.user, metric, goal_value)
                     st.success(f"Goal for {metric} set to {goal_value}!")
-                    st.rerun()  # Refresh to show updated goals
+                    st.rerun()
 
+        # View, Update, and Delete Goals
+        st.subheader("Manage Your Goals")
+        st.write("DEBUG: Rendering Goal Management")
         goals_df = get_goals(st.session_state.user)
         st.write(f"DEBUG: Goals data rows: {len(goals_df)}")
         if not goals_df.empty:
@@ -335,7 +340,7 @@ def main():
             goals_table = pd.DataFrame(goal_data)
             st.dataframe(goals_table)
 
-            st.write("Update or Delete Goals")
+            st.write("Update or Delete Existing Goals")
             for _, goal in goals_df.iterrows():
                 goal_id = goal['id']
                 metric = goal['metric']
@@ -349,6 +354,8 @@ def main():
                                 st.error("AHT target should be realistic (e.g., 100-1000 seconds).")
                             elif metric != 'aht' and new_value > 100:
                                 st.error("Percentage metrics should be between 0 and 100.")
+                            elif new_value == 0.0:
+                                st.error("Target value cannot be zero.")
                             else:
                                 update_goal(goal_id, new_value)
                                 st.success(f"Updated {metric} goal to {new_value}!")
@@ -387,7 +394,7 @@ def main():
             fig.add_hline(y=kpi_threshold, line_dash="dash", line_color="red", annotation_text=f"KPI: {kpi_threshold}")
             st.plotly_chart(fig)
         else:
-            st.write("No performance data available for visualization.")
+            st.write("No performance data available for visualization. Contact your manager to input performance data.")
 
         # Performance Trends and Alerts
         st.subheader("Performance Trends")
