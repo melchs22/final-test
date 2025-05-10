@@ -7,6 +7,7 @@ import httpx
 from httpx_oauth.clients.google import GoogleOAuth2
 import os
 import asyncio
+import plotly.graph_objects as go
 
 # Initialize Supabase client
 @st.cache_resource
@@ -62,8 +63,8 @@ def get_performance(agent_email=None):
 
 # User Functions
 def get_user_role(email):
-    res = supabase.table("users").select("role").eq("email", email).single().execute()
-    return res.data["role"] if res.data else None
+    res = supabase.table("users").select("role").eq("email", email).execute()
+    return res.data[0]["role"] if res.data else None
 
 def get_agents():
     res = supabase.table("users").select("email").eq("role", "Agent").execute()
@@ -91,6 +92,15 @@ def save_goal(agent_email, metric, goal_value):
         "set_date": datetime.now().strftime("%Y-%m-%d")
     }).execute()
 
+def update_goal(goal_id, goal_value):
+    supabase.table("agent_goals").update({
+        "goal_value": goal_value,
+        "set_date": datetime.now().strftime("%Y-%m-%d")
+    }).eq("id", goal_id).execute()
+
+def delete_goal(goal_id):
+    supabase.table("agent_goals").delete().eq("id", goal_id).execute()
+
 def get_goals(agent_email):
     res = supabase.table("agent_goals").select("*").eq("agent_email", agent_email).execute()
     return pd.DataFrame(res.data)
@@ -110,7 +120,6 @@ def get_resources(metric):
 
 # Achievement Functions
 def award_achievement(agent_email, achievement_name):
-    # Check if achievement already exists to avoid duplicates
     existing = supabase.table("agent_achievements").select("*").eq("agent_email", agent_email).eq("achievement_name", achievement_name).execute()
     if not existing.data:
         supabase.table("agent_achievements").insert({
@@ -131,8 +140,12 @@ def save_preferences(agent_email, metrics):
     }).execute()
 
 def get_preferences(agent_email):
-    res = supabase.table("agent_preferences").select("preferred_metrics").eq("agent_email", agent_email).single().execute()
-    return res.data['preferred_metrics'] if res.data else ['attendance', 'quality_score', 'aht', 'csat']
+    res = supabase.table("agent_preferences").select("preferred_metrics").eq("agent_email", agent_email).execute()
+    return res.data[0]['preferred_metrics'] if res.data else ['attendance', 'quality_score', 'aht', 'csat']
+
+# User Management Functions
+def add_user(email, role):
+    supabase.table("users").insert({"email": email, "role": role}).execute()
 
 # Streamlit app
 def main():
@@ -175,9 +188,9 @@ def main():
                         st.query_params.clear()
                         st.rerun()
                     else:
-                        st.error("User not registered. Contact admin.")
+                        st.error("User not registered in the system. Please contact the administrator to register your email.")
                 except Exception as e:
-                    st.error(f"Login failed: {str(e)}")
+                    st.error(f"Login failed: {str(e)}. Please try again or contact support.")
         return
 
     if st.button("Logout"):
@@ -190,7 +203,7 @@ def main():
 
     if st.session_state.role == "Manager":
         st.title("Manager Dashboard")
-        tabs = st.tabs(["Set KPIs", "Input Performance", "View Assessments"])
+        tabs = st.tabs(["Set KPIs", "Input Performance", "View Assessments", "Manage Users"])
 
         with tabs[0]:
             st.header("Set KPI Thresholds")
@@ -200,7 +213,7 @@ def main():
                     'attendance': st.number_input("Attendance (%, min)", value=kpis.get('attendance', 95.0)),
                     'quality_score': st.number_input("Quality Score (%, min)", value=kpis.get('quality_score', 90.0)),
                     'product_knowledge': st.number_input("Product Knowledge (%, min)", value=kpis.get('product_knowledge', 85.0)),
-                    'contact_success_rate': st.number_input("Contact Success琐 Rate (%, min)", value=kpis.get('contact_success_rate', 80.0)),
+                    'contact_success_rate': st.number_input("Contact Success Rate (%, min)", value=kpis.get('contact_success_rate', 80.0)),
                     'onboarding': st.number_input("Onboarding (%, min)", value=kpis.get('onboarding', 90.0)),
                     'reporting': st.number_input("Reporting (%, min)", value=kpis.get('reporting', 95.0)),
                     'talk_time': st.number_input("CRM Talk Time (seconds, min)", value=kpis.get('talk_time', 300.0)),
@@ -247,10 +260,23 @@ def main():
             else:
                 st.write("No performance data available.")
 
+        with tabs[3]:
+            st.header("Manage Users")
+            with st.form("user_form"):
+                new_email = st.text_input("User Email")
+                new_role = st.selectbox("Role", ["Agent", "Manager"])
+                if st.form_submit_button("Add User"):
+                    try:
+                        add_user(new_email, new_role)
+                        st.success(f"User {new_email} added as {new_role}!")
+                    except Exception as e:
+                        st.error(f"Failed to add user: {str(e)}")
+
     elif st.session_state.role == "Agent":
         st.title(f"Agent Dashboard - {st.session_state.user}")
         performance_df = get_performance(st.session_state.user)
         kpis = get_kpis()
+        st.write(f"DEBUG: Performance data rows: {len(performance_df)}")
         
         if not performance_df.empty:
             results = assess_performance(performance_df, kpis)
@@ -260,8 +286,60 @@ def main():
         else:
             st.write("No performance data available.")
 
+        # Enhanced Goal Setting and Progress Tracking
+        st.subheader("Set and Manage Your Goals")
+        st.write("DEBUG: Rendering Goal Setting")
+        with st.form("goal_form"):
+            st.write("Set New Goal")
+            metric = st.selectbox("Select Metric", metrics, key="new_goal_metric")
+            goal_value = st.number_input("Target Value", min_value=0.0, max_value=100.0 if metric != 'aht' else 1000.0, step=0.1)
+            if st.form_submit_button("Add Goal"):
+                if metric == 'aht' and goal_value < 100:
+                    st.error("AHT target should be realistic (e.g., 100-1000 seconds).")
+                elif metric != 'aht' and goal_value > 100:
+                    st.error("Percentage metrics should be between 0 and 100.")
+                else:
+                    save_goal(st.session_state.user, metric, goal_value)
+                    st.success(f"Goal for {metric} set to {goal_value}!")
+
+        goals_df = get_goals(st.session_state.user)
+        st.write(f"DEBUG: Goals data rows: {len(goals_df)}")
+        if not goals_df.empty:
+            st.write("Your Current Goals")
+            for _, goal in goals_df.iterrows():
+                goal_id = goal['id']
+                metric = goal['metric']
+                goal_value = goal['goal_value']
+                set_date = goal['set_date']
+                latest_value = performance_df[metric].iloc[-1] if not performance_df.empty and metric in performance_df else 0
+                progress = (latest_value / goal_value * 100) if metric != 'aht' else (goal_value / latest_value * 100 if latest_value > 0 else 0)
+                progress = min(progress, 100)
+
+                col1, col2, col3 = st.columns([2, 1, 1])
+                with col1:
+                    st.write(f"**{metric.replace('_', ' ').title()}**: Target = {goal_value}, Current = {latest_value:.2f}, Set on {set_date}")
+                    fig = go.Figure(go.Indicator(
+                        mode="gauge+number",
+                        value=progress,
+                        title={'text': f"Progress to {metric.replace('_', ' ').title()} Goal"},
+                        gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "green" if progress >= 80 else "orange"}}
+                    ))
+                    st.plotly_chart(fig, use_container_width=True)
+                with col2:
+                    new_value = st.number_input(f"Update {metric} Target", min_value=0.0, max_value=100.0 if metric != 'aht' else 1000.0, value=goal_value, key=f"update_{goal_id}")
+                    if st.button("Update", key=f"update_btn_{goal_id}"):
+                        update_goal(goal_id, new_value)
+                        st.success(f"Updated {metric} goal to {new_value}!")
+                with col3:
+                    if st.button("Delete", key=f"delete_btn_{goal_id}"):
+                        delete_goal(goal_id)
+                        st.success(f"Deleted {metric} goal!")
+        else:
+            st.write("No goals set yet.")
+
         # 1. Detailed Metric Breakdown
         st.subheader("Metric Breakdown")
+        st.write("DEBUG: Rendering Metric Breakdown")
         selected_metric = st.selectbox("Select Metric to View", metrics)
         if not performance_df.empty:
             fig = px.line(performance_df, x='date', y=selected_metric, title=f"Your {selected_metric.replace('_', ' ').title()} Over Time")
@@ -271,6 +349,7 @@ def main():
 
         # 2. Performance Trends and Alerts
         st.subheader("Performance Trends")
+        st.write("DEBUG: Rendering Performance Trends")
         if not performance_df.empty:
             trends = {}
             for metric in metrics:
@@ -285,6 +364,7 @@ def main():
 
         # 3. Personalized Recommendations
         st.subheader("Personalized Recommendations")
+        st.write("DEBUG: Rendering Recommendations")
         recommendations = {
             'aht': "Reduce Average Handle Time by practicing concise communication and using CRM shortcuts.",
             'csat': "Improve Customer Satisfaction by actively listening and personalizing customer interactions.",
@@ -292,7 +372,6 @@ def main():
             'attendance': "Ensure consistent attendance by planning your schedule and communicating any issues early.",
             'quality_score': "Enhance Quality Score by double-checking responses for accuracy and clarity.",
             'product_knowledge': "Improve Product Knowledge by reviewing training materials and FAQs regularly."
-            # Add more as needed
         }
         if not performance_df.empty:
             latest_performance = performance_df.iloc[-1]
@@ -306,6 +385,7 @@ def main():
 
         # 4. Peer Comparison
         st.subheader("Compare to Team")
+        st.write("DEBUG: Rendering Peer Comparison")
         all_performance = get_performance()
         if not all_performance.empty:
             team_avg = all_performance.groupby('date')[metrics].mean().reset_index().iloc[-1]
@@ -317,33 +397,18 @@ def main():
             fig = px.bar(comparison_df, barmode='group', title="Your Performance vs. Team Average")
             st.plotly_chart(fig)
 
-        # 5. Goal Setting and Progress Tracking
-        st.subheader("Set and Track Goals")
-        with st.form("goal_form"):
-            metric = st.selectbox("Select Metric for Goal", metrics)
-            goal_value = st.number_input("Goal Value", min_value=0.0)
-            if st.form_submit_button("Set Goal"):
-                save_goal(st.session_state.user, metric, goal_value)
-                st.success("Goal saved!")
-        
-        goals_df = get_goals(st.session_state.user)
-        if not goals_df.empty and not performance_df.empty:
-            for _, goal in goals_df.iterrows():
-                metric = goal['metric']
-                goal_value = goal['goal_value']
-                latest_value = performance_df[metric].iloc[-1]
-                st.write(f"Goal for {metric}: {goal_value} | Current: {latest_value} | {'Achieved!' if (metric == 'aht' and latest_value <= goal_value) or (metric != 'aht' and latest_value >= goal_value) else 'Not yet'}")
-
-        # 6. Feedback Submission
+        # 5. Feedback Submission
         st.subheader("Submit Feedback")
+        st.write("DEBUG: Rendering Feedback")
         with st.form("feedback_form"):
             feedback = st.text_area("Your Feedback")
             if st.form_submit_button("Submit"):
                 save_feedback(st.session_state.user, feedback)
                 st.success("Feedback submitted!")
 
-        # 7. Historical Data Download
+        # 6. Historical Data Download
         st.subheader("Download Your Performance Data")
+        st.write("DEBUG: Rendering Data Download")
         if not performance_df.empty:
             csv = performance_df.to_csv(index=False)
             st.download_button(
@@ -353,8 +418,9 @@ def main():
                 mime="text/csv"
             )
 
-        # 8. Training Resources
+        # 7. Training Resources
         st.subheader("Training Resources")
+        st.write("DEBUG: Rendering Training Resources")
         if not performance_df.empty:
             latest_performance = performance_df.iloc[-1]
             for metric in metrics:
@@ -367,8 +433,9 @@ def main():
                     for res in resources:
                         st.markdown(f"- [{res['resource_name']}]({res['resource_url']}) for {metric.replace('_', ' ').title()}")
 
-        # 9. Gamification Elements
+        # 8. Gamification Elements
         st.subheader("Your Achievements")
+        st.write("DEBUG: Rendering Achievements")
         if not performance_df.empty:
             latest_performance = performance_df.iloc[-1]
             if latest_performance['attendance'] >= 100:
@@ -383,9 +450,10 @@ def main():
         else:
             st.write("No achievements yet.")
 
-        # 10. Customizable Dashboard Widgets
+        # 9. Customizable Dashboard Widgets
         st.subheader("Customize Dashboard")
-        preferred_metrics = st.multiselect("Select Metrics to Display", metrics, default=get_preferences(st Ditto: true
+        st.write("DEBUG: Rendering Customize Dashboard")
+        preferred_metrics = st.multiselect("Select Metrics to Display", metrics, default=get_preferences(st.session_state.user))
         if st.button("Save Preferences"):
             save_preferences(st.session_state.user, preferred_metrics)
             st.success("Preferences saved!")
