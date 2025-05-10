@@ -1,677 +1,763 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import datetime, timedelta
-from supabase import create_client, Client
-import httpx
-from httpx_oauth.clients.google import GoogleOAuth2
-import os
-import asyncio
 import plotly.graph_objects as go
-import logging
-from typing import Optional, Dict, List, Union
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Constants
-METRICS = [
-    'attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
-    'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat', 'call_volume'
-]
-SESSION_TIMEOUT_MINUTES = 60
+from supabase import create_client, Client
+from httpx_oauth.clients.google import GoogleOAuth2
+from datetime import datetime, timedelta
+import json
 
 # Initialize Supabase client
-@st.cache_resource
-def get_supabase() -> Client:
-    """Initialize and return Supabase client."""
+def init_supabase():
     try:
-        return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
+        url = st.secrets["supabase_url"]
+        key = st.secrets["supabase_key"]
+        return create_client(url, key)
     except Exception as e:
-        logger.error(f"Failed to initialize Supabase client: {str(e)}")
-        st.error("Failed to connect to database. Please try again later.")
-        st.stop()
+        st.error(f"Failed to initialize Supabase: {e}")
         return None
 
-supabase = get_supabase()
-
-# OAuth setup
-def get_google_client() -> GoogleOAuth2:
-    """Initialize and return Google OAuth client."""
+# Initialize Google OAuth client
+def init_google_oauth():
     try:
-        return GoogleOAuth2(
-            client_id=st.secrets["oauth"]["client_id"],
-            client_secret=st.secrets["oauth"]["client_secret"]
-        )
+        client_id = st.secrets["google_client_id"]
+        client_secret = st.secrets["google_client_secret"]
+        return GoogleOAuth2(client_id=client_id, client_secret=client_secret)
     except Exception as e:
-        logger.error(f"Failed to initialize Google OAuth client: {str(e)}")
-        st.error("Authentication service unavailable. Please try again later.")
-        st.stop()
+        st.error(f"Failed to initialize Google OAuth: {e}")
         return None
 
-async def get_authorization_url(client: GoogleOAuth2) -> str:
-    """Get Google OAuth authorization URL."""
-    try:
-        redirect_uri = st.secrets["oauth"]["redirect_uri"]
-        if "STREAMLIT_CLOUD_URL" in os.environ:
-            redirect_uri = f"{os.environ['STREAMLIT_CLOUD_URL']}"
-        return await client.get_authorization_url(
-            redirect_uri=redirect_uri,
-            scope=["email", "profile"]
-        )
-    except Exception as e:
-        logger.error(f"Failed to get authorization URL: {str(e)}")
-        st.error("Failed to initiate login process. Please try again.")
-        st.stop()
-        return ""
-
-async def get_google_user(token: Dict) -> Optional[str]:
-    """Get Google user email from OAuth token."""
-    try:
-        async with httpx.AsyncClient() as client:
-            headers = {"Authorization": f"Bearer {token['access_token']}"}
-            response = await client.get("https://www.googleapis.com/oauth2/v3/userinfo", headers=headers)
-            response.raise_for_status()
-            return response.json()['email']
-    except Exception as e:
-        logger.error(f"Failed to get user info from Google: {str(e)}")
-        st.error("Failed to authenticate user. Please try again.")
-        return None
-
-# Database Operations with Error Handling
-def safe_supabase_operation(operation, *args, **kwargs):
-    """Wrapper for Supabase operations with error handling."""
-    try:
-        result = operation(*args, **kwargs)
-        if hasattr(result, 'error') and result.error:
-            raise Exception(result.error)
-        return result
-    except Exception as e:
-        logger.error(f"Database operation failed: {str(e)}")
-        st.error("Database operation failed. Please try again or contact support.")
-        return None
-
-# KPI Functions
-@st.cache_data(ttl=300)
-def get_kpis() -> Dict[str, float]:
-    """Get all KPI thresholds from database."""
-    res = safe_supabase_operation(supabase.table("kpis").select("*").execute)
-    return {item["metric"]: item["threshold"] for item in res.data} if res else {}
-
-def save_kpis(kpis: Dict[str, float]) -> bool:
-    """Save KPI thresholds to database."""
-    data = [{"metric": metric, "threshold": threshold} for metric, threshold in kpis.items()]
-    res = safe_supabase_operation(supabase.table("kpis").upsert(data).execute)
-    return res is not None
-
-# Performance Functions
-@st.cache_data(ttl=300)
-def get_performance(agent_email: Optional[str] = None) -> pd.DataFrame:
-    """Get performance data for specific agent or all agents."""
-    query = supabase.table("performance").select("*")
-    if agent_email:
-        query = query.eq("agent_email", agent_email)
-    res = safe_supabase_operation(query.execute)
-    return pd.DataFrame(res.data) if res else pd.DataFrame()
-
-def save_performance(agent_email: str, data: Dict) -> bool:
-    """Save performance data for an agent."""
-    data["agent_email"] = agent_email
-    data["date"] = datetime.now().strftime("%Y-%m-%d")
-    res = safe_supabase_operation(supabase.table("performance").insert(data).execute)
-    return res is not None
-
-# User Functions
-@st.cache_data(ttl=3600)
-def get_user_role(email: str) -> Optional[str]:
-    """Get user role from database."""
-    res = safe_supabase_operation(supabase.table("users").select("role").eq("email", email).execute)
-    return res.data[0]["role"] if res and res.data else None
-
-@st.cache_data(ttl=3600)
-def get_agents() -> List[str]:
-    """Get list of all agent emails."""
-    res = safe_supabase_operation(supabase.table("users").select("email").eq("role", "Agent").execute)
-    return [user["email"] for user in res.data] if res else []
-
-def add_user(email: str, role: str) -> bool:
-    """Add a new user to the system."""
-    res = safe_supabase_operation(supabase.table("users").insert({"email": email, "role": role}).execute)
-    return res is not None
-
-# Goal Functions
-@st.cache_data(ttl=300)
-def get_goals(agent_email: str) -> pd.DataFrame:
-    """Get goals for a specific agent."""
-    res = safe_supabase_operation(supabase.table("agent_goals").select("*").eq("agent_email", agent_email).execute)
-    return pd.DataFrame(res.data) if res else pd.DataFrame()
-
-def save_goal(agent_email: str, metric: str, goal_value: float) -> bool:
-    """Save a new goal for an agent."""
-    data = {
-        "agent_email": agent_email,
-        "metric": metric,
-        "goal_value": goal_value,
-        "set_date": datetime.now().strftime("%Y-%m-%d")
-    }
-    res = safe_supabase_operation(supabase.table("agent_goals").insert(data).execute)
-    return res is not None
-
-def update_goal(goal_id: int, goal_value: float) -> bool:
-    """Update an existing goal."""
-    data = {
-        "goal_value": goal_value,
-        "set_date": datetime.now().strftime("%Y-%m-%d")
-    }
-    res = safe_supabase_operation(supabase.table("agent_goals").update(data).eq("id", goal_id).execute)
-    return res is not None
-
-def delete_goal(goal_id: int) -> bool:
-    """Delete a goal."""
-    res = safe_supabase_operation(supabase.table("agent_goals").delete().eq("id", goal_id).execute)
-    return res is not None
-
-# Feedback Functions
-def save_feedback(agent_email: str, feedback: str) -> bool:
-    """Save agent feedback."""
-    data = {
-        "agent_email": agent_email,
-        "feedback": feedback,
-        "submitted_date": datetime.now().strftime("%Y-%m-%d")
-    }
-    res = safe_supabase_operation(supabase.table("agent_feedback").insert(data).execute)
-    return res is not None
-
-# Training Resources Functions
-@st.cache_data(ttl=3600)
-def get_resources(metric: str) -> List[Dict]:
-    """Get training resources for a specific metric."""
-    res = safe_supabase_operation(supabase.table("training_resources").select("*").eq("metric", metric).execute)
-    return res.data if res else []
-
-# Achievement Functions
-@st.cache_data(ttl=300)
-def get_achievements(agent_email: str) -> List[Dict]:
-    """Get achievements for a specific agent."""
-    res = safe_supabase_operation(supabase.table("agent_achievements").select("*").eq("agent_email", agent_email).execute)
-    return res.data if res else []
-
-def award_achievement(agent_email: str, achievement_name: str) -> bool:
-    """Award an achievement to an agent if not already awarded."""
-    existing = safe_supabase_operation(
-        supabase.table("agent_achievements").select("*")
-        .eq("agent_email", agent_email)
-        .eq("achievement_name", achievement_name)
-        .execute
-    )
-    if not existing or not existing.data:
-        data = {
-            "agent_email": agent_email,
-            "achievement_name": achievement_name,
-            "date_earned": datetime.now().strftime("%Y-%m-%d")
-        }
-        res = safe_supabase_operation(supabase.table("agent_achievements").insert(data).execute)
-        return res is not None
-    return False
-
-# Preferences Functions
-@st.cache_data(ttl=300)
-def get_preferences(agent_email: str) -> List[str]:
-    """Get dashboard preferences for an agent."""
-    res = safe_supabase_operation(supabase.table("agent_preferences").select("preferred_metrics").eq("agent_email", agent_email).execute)
-    return res.data[0]['preferred_metrics'] if res and res.data else ['attendance', 'quality_score', 'aht', 'csat']
-
-def save_preferences(agent_email: str, metrics: List[str]) -> bool:
-    """Save dashboard preferences for an agent."""
-    data = {
-        "agent_email": agent_email,
-        "preferred_metrics": metrics
-    }
-    res = safe_supabase_operation(supabase.table("agent_preferences").upsert(data).execute)
-    return res is not None
-
-# Performance Assessment
-def assess_performance(performance_df: pd.DataFrame, kpis: Dict[str, float]) -> pd.DataFrame:
-    """Assess performance against KPIs."""
-    results = performance_df.copy()
-    for metric in METRICS:
-        if metric == 'aht':
-            results[f'{metric}_pass'] = results[metric] <= kpis.get(metric, 600)
-        else:
-            results[f'{metric}_pass'] = results[metric] >= kpis.get(metric, 50)
-    results['overall_score'] = results[[f'{m}_pass' for m in METRICS]].mean(axis=1) * 100
-    return results
-
-# Session Management
-def check_session_timeout():
-    """Check if session has timed out and clear if necessary."""
-    if 'last_activity' in st.session_state:
-        if (datetime.now() - st.session_state.last_activity).seconds > SESSION_TIMEOUT_MINUTES * 60:
-            for key in ["user", "role", "oauth_client", "oauth_token"]:
-                st.session_state.pop(key, None)
-            st.warning("Session expired. Please log in again.")
-            st.rerun()
-    st.session_state.last_activity = datetime.now()
-
-# Input Validation
-def validate_performance_input(data: Dict) -> List[str]:
-    """Validate performance input data."""
-    errors = []
-    for metric, value in data.items():
-        if metric.endswith('_percent') and (value < 0 or value > 100):
-            errors.append(f"{metric} must be between 0-100")
-        elif metric == 'aht' and value < 0:
-            errors.append("AHT cannot be negative")
-        elif metric == 'call_volume' and value < 0:
-            errors.append("Call volume cannot be negative")
-    return errors
-
-def validate_goal_input(metric: str, value: float) -> List[str]:
-    """Validate goal input data."""
-    errors = []
-    if metric == 'aht':
-        if value < 100 or value > 1000:
-            errors.append("AHT target should be between 100-1000 seconds")
-    elif metric != 'aht' and (value < 0 or value > 100):
-        errors.append("Percentage metrics should be between 0-100")
-    elif value == 0:
-        errors.append("Target value cannot be zero")
-    return errors
-
-# UI Components
-def render_login_page():
-    """Render the login page."""
-    st.title("Login with Google")
-    client = get_google_client()
-    st.session_state.oauth_client = client
-
-    try:
-        auth_url = asyncio.run(get_authorization_url(client))
-        st.markdown(f"[Login with Google]({auth_url})")
-    except Exception as e:
-        st.error(f"Failed to generate login URL: {str(e)}")
-        return
-
-    query_params = st.query_params
-    if query_params:
-        code = query_params.get("code")
-        if code:
-            try:
-                redirect_uri = st.secrets["oauth"]["redirect_uri"]
-                if "STREAMLIT_CLOUD_URL" in os.environ:
-                    redirect_uri = f"{os.environ['STREAMLIT_CLOUD_URL']}"
-                token = asyncio.run(client.get_access_token(code, redirect_uri))
-                st.session_state.oauth_token = token
-                email = asyncio.run(get_google_user(token))
-                if email:
-                    role = get_user_role(email)
-                    if role:
-                        st.session_state.user = email
-                        st.session_state.role = role
-                        st.success(f"Logged in as {email} ({role})")
-                        st.query_params.clear()
-                        st.rerun()
+# Authentication
+def authenticate():
+    if "user_email" not in st.session_state or "user_role" not in st.session_state:
+        st.write("## Welcome to Call Center Assessment System")
+        
+        # This would typically redirect to Google OAuth flow
+        # For this demo, we'll use a simplified login
+        with st.form("login_form"):
+            email = st.text_input("Email")
+            login_button = st.form_submit_button("Login with Google")
+            
+            if login_button and email:
+                # Check if user exists in Supabase
+                supabase = init_supabase()
+                if supabase:
+                    response = supabase.table("users").select("email", "role").eq("email", email).execute()
+                    if response.data:
+                        user = response.data[0]
+                        st.session_state["user_email"] = user["email"]
+                        st.session_state["user_role"] = user["role"]
+                        st.experimental_rerun()
                     else:
-                        st.error("User not registered in the system. Please contact the administrator.")
-            except Exception as e:
-                st.error(f"Login failed: {str(e)}. Please try again or contact support.")
+                        st.error("User not found. Please contact your administrator.")
+        
+        # Debug info
+        st.write("DEBUG: Login screen shown. No user in session.")
+        return False
+    else:
+        # Debug info
+        st.write(f"DEBUG: Logged-in user: {st.session_state.user_email}, Role: {st.session_state.user_role}")
+        return True
 
-def render_manager_dashboard():
-    """Render the manager dashboard."""
+# Clear cache button for debugging
+def clear_cache():
+    st.cache_data.clear()
+    st.experimental_rerun()
+
+# Manager Dashboard
+def manager_dashboard(supabase):
     st.title("Manager Dashboard")
+    
+    # Debug button
+    if st.button("Clear Cache (Debug)"):
+        clear_cache()
+    
     tabs = st.tabs(["Set KPIs", "Input Performance", "View Assessments", "Manage Users"])
-
+    
+    # Set KPIs tab
     with tabs[0]:
-        st.header("Set KPI Thresholds")
-        kpis = get_kpis()
+        st.header("Set Key Performance Indicators")
+        
+        # Get existing KPIs
+        kpis_response = supabase.table("kpis").select("*").execute()
+        if kpis_response.data:
+            st.write("Current KPI Thresholds:")
+            kpis_df = pd.DataFrame(kpis_response.data)
+            st.dataframe(kpis_df)
+        
+        # Form to update KPIs
         with st.form("kpi_form"):
-            inputs = {
-                'attendance': st.number_input("Attendance (%, min)", value=kpis.get('attendance', 95.0)),
-                'quality_score': st.number_input("Quality Score (%, min)", value=kpis.get('quality_score', 90.0)),
-                'product_knowledge': st.number_input("Product Knowledge (%, min)", value=kpis.get('product_knowledge', 85.0)),
-                'contact_success_rate': st.number_input("Contact Success Rate (%, min)", value=kpis.get('contact_success_rate', 80.0)),
-                'onboarding': st.number_input("Onboarding (%, min)", value=kpis.get('onboarding', 90.0)),
-                'reporting': st.number_input("Reporting (%, min)", value=kpis.get('reporting', 95.0)),
-                'talk_time': st.number_input("CRM Talk Time (seconds, min)", value=kpis.get('talk_time', 300.0)),
-                'resolution_rate': st.number_input("Issue Resolution Rate (%, min)", value=kpis.get('resolution_rate', 80.0)),
-                'aht': st.number_input("Average Handle Time (seconds, max)", value=kpis.get('aht', 600.0)),
-                'csat': st.number_input("Customer Satisfaction (%, min)", value=kpis.get('csat', 85.0)),
-                'call_volume': st.number_input("Call Volume (calls, min)", value=kpis.get('call_volume', 50))
-            }
-            if st.form_submit_button("Save KPIs"):
-                save_kpis(inputs)
-                st.success("KPIs saved!")
-
+            st.subheader("Update KPI Thresholds")
+            metric = st.selectbox("Metric", ["attendance", "quality_score", "product_knowledge", 
+                                            "contact_success_rate", "onboarding", "reporting",
+                                            "talk_time", "resolution_rate", "aht", "csat", "call_volume"])
+            threshold = st.number_input("Threshold Value", min_value=0.0, step=0.1)
+            submit_kpi = st.form_submit_button("Save KPI")
+            
+            if submit_kpi:
+                try:
+                    # Upsert KPI
+                    response = supabase.table("kpis").upsert({"metric": metric, "threshold": threshold}).execute()
+                    st.success(f"KPI threshold for {metric} updated successfully!")
+                except Exception as e:
+                    st.error(f"Failed to update KPI: {e}")
+    
+    # Input Performance tab
     with tabs[1]:
         st.header("Input Agent Performance")
-        agents = get_agents()
-        if not agents:
-            st.warning("No agents available. Please add agents in the 'Manage Users' tab.")
-        else:
+        
+        # Get agents
+        users_response = supabase.table("users").select("email").eq("role", "Agent").execute()
+        if users_response.data:
+            agents = [user["email"] for user in users_response.data]
+            
             with st.form("performance_form"):
-                agent = st.selectbox("Select Agent", agents)
-                data = {
-                    'attendance': st.number_input("Attendance (%)", min_value=0.0, max_value=100.0, value=0.0),
-                    'quality_score': st.number_input("Quality Score (%)", min_value=0.0, max_value=100.0, value=0.0),
-                    'product_knowledge': st.number_input("Product Knowledge (%)", min_value=0.0, max_value=100.0, value=0.0),
-                    'contact_success_rate': st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0, value=0.0),
-                    'onboarding': st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0, value=0.0),
-                    'reporting': st.number_input("Reporting (%)", min_value=0.0, max_value=100.0, value=0.0),
-                    'talk_time': st.number_input("CRM Talk Time (seconds)", min_value=0.0, value=0.0),
-                    'resolution_rate': st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0, value=0.0),
-                    'aht': st.number_input("Average Handle Time (seconds)", min_value=0.0, value=0.0),
-                    'csat': st.number_input("Customer Satisfaction (%)", min_value=0.0, max_value=100.0, value=0.0),
-                    'call_volume': st.number_input("Call Volume (calls)", min_value=0, value=0)
-                }
-                if st.form_submit_button("Submit Performance"):
-                    errors = validate_performance_input(data)
-                    if errors:
-                        for error in errors:
-                            st.error(error)
-                    else:
-                        if save_performance(agent, data):
-                            st.success("Performance data saved!")
-                        else:
-                            st.error("Failed to save performance data.")
-
-    with tabs[2]:
-        st.header("Assessment Results")
-        performance_df = get_performance()
-        if not performance_df.empty:
-            kpis = get_kpis()
-            results = assess_performance(performance_df, kpis)
-            st.dataframe(results)
-            fig = px.bar(results, x='agent_email', y='overall_score', color='agent_email', title="Agent Overall Scores")
-            st.plotly_chart(fig)
+                st.subheader("Add Performance Data")
+                agent_email = st.selectbox("Select Agent", agents)
+                perf_date = st.date_input("Date", datetime.now().date())
+                
+                # Performance metrics
+                attendance = st.slider("Attendance (%)", 0.0, 100.0, 95.0, 0.1)
+                quality_score = st.slider("Quality Score (%)", 0.0, 100.0, 80.0, 0.1)
+                product_knowledge = st.slider("Product Knowledge (%)", 0.0, 100.0, 85.0, 0.1)
+                contact_success_rate = st.slider("Contact Success Rate (%)", 0.0, 100.0, 75.0, 0.1)
+                onboarding = st.slider("Onboarding (%)", 0.0, 100.0, 90.0, 0.1)
+                reporting = st.slider("Reporting (%)", 0.0, 100.0, 85.0, 0.1)
+                talk_time = st.slider("Talk Time (%)", 0.0, 100.0, 70.0, 0.1)
+                resolution_rate = st.slider("Resolution Rate (%)", 0.0, 100.0, 80.0, 0.1)
+                aht = st.number_input("Average Handle Time (seconds)", 100, 1000, 300, 10)
+                csat = st.slider("Customer Satisfaction (%)", 0.0, 100.0, 85.0, 0.1)
+                call_volume = st.number_input("Call Volume", 0, 500, 100, 5)
+                
+                submit_perf = st.form_submit_button("Save Performance Data")
+                
+                if submit_perf:
+                    try:
+                        # Insert performance data
+                        perf_data = {
+                            "agent_email": agent_email,
+                            "date": perf_date.isoformat(),
+                            "attendance": attendance,
+                            "quality_score": quality_score,
+                            "product_knowledge": product_knowledge,
+                            "contact_success_rate": contact_success_rate,
+                            "onboarding": onboarding,
+                            "reporting": reporting,
+                            "talk_time": talk_time,
+                            "resolution_rate": resolution_rate,
+                            "aht": aht,
+                            "csat": csat,
+                            "call_volume": call_volume
+                        }
+                        
+                        response = supabase.table("performance").insert(perf_data).execute()
+                        st.success(f"Performance data for {agent_email} added successfully!")
+                    except Exception as e:
+                        st.error(f"Failed to add performance data: {e}")
         else:
-            st.write("No performance data available.")
-
+            st.warning("No agents found. Please add users first.")
+    
+    # View Assessments tab
+    with tabs[2]:
+        st.header("View Assessments")
+        
+        # Get performance data
+        perf_response = supabase.table("performance").select("*").execute()
+        kpis_response = supabase.table("kpis").select("*").execute()
+        
+        if perf_response.data and kpis_response.data:
+            # Convert to dataframes
+            perf_df = pd.DataFrame(perf_response.data)
+            kpis_df = pd.DataFrame(kpis_response.data).set_index("metric")
+            
+            # Add pass/fail status
+            for metric in kpis_df.index:
+                if metric in perf_df.columns:
+                    threshold = kpis_df.loc[metric, "threshold"]
+                    
+                    # For AHT, lower is better
+                    if metric == "aht":
+                        perf_df[f"{metric}_status"] = perf_df[metric].apply(
+                            lambda x: "Pass" if x <= threshold else "Fail")
+                    else:
+                        perf_df[f"{metric}_status"] = perf_df[metric].apply(
+                            lambda x: "Pass" if x >= threshold else "Fail")
+            
+            # Display assessment table
+            st.subheader("Performance Assessment")
+            st.dataframe(perf_df)
+            
+            # Overall performance chart
+            st.subheader("Overall Agent Performance")
+            
+            # Calculate average scores
+            avg_scores = perf_df.groupby("agent_email")[["attendance", "quality_score", "csat"]].mean().reset_index()
+            
+            # Create bar chart
+            fig = px.bar(
+                avg_scores, 
+                x="agent_email", 
+                y=["attendance", "quality_score", "csat"],
+                barmode="group",
+                title="Average Performance by Agent",
+                labels={"agent_email": "Agent", "value": "Score (%)", "variable": "Metric"}
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No assessment data available yet.")
+    
+    # Manage Users tab
     with tabs[3]:
         st.header("Manage Users")
-        with st.form("user_form"):
-            new_email = st.text_input("User Email")
-            new_role = st.selectbox("Role", ["Agent", "Manager"])
-            if st.form_submit_button("Add User"):
-                if not new_email:
-                    st.error("Email cannot be empty")
-                elif "@" not in new_email:
-                    st.error("Please enter a valid email address")
-                else:
-                    if add_user(new_email, new_role):
-                        st.success(f"User {new_email} added as {new_role}!")
-                    else:
-                        st.error(f"Failed to add user {new_email}")
-
-def render_agent_goals(agent_email: str):
-    """Render the agent goals section."""
-    st.header("Input Your Goals")
-    with st.form("goal_input_form"):
-        st.subheader("Add New Goal")
-        metric = st.selectbox("Select Metric", METRICS, key="goal_metric")
-        goal_value = st.number_input("Target Value", min_value=0.0, max_value=100.0 if metric != 'aht' else 1000.0, value=0.0, step=0.1)
-        if st.form_submit_button("Submit Goal"):
-            errors = validate_goal_input(metric, goal_value)
-            if errors:
-                for error in errors:
-                    st.error(error)
-            else:
-                if save_goal(agent_email, metric, goal_value):
-                    st.success(f"Goal for {metric.replace('_', ' ').title()} set to {goal_value}!")
-                    st.rerun()
-                else:
-                    st.error("Failed to save goal.")
-
-    st.header("Manage Your Goals")
-    goals_df = get_goals(agent_email)
-    if not goals_df.empty:
-        st.subheader("Your Current Goals")
-        goal_data = []
-        performance_df = get_performance(agent_email)
         
-        for _, goal in goals_df.iterrows():
-            goal_id = goal['id']
-            metric = goal['metric']
-            goal_value = goal['goal_value']
-            set_date = goal['set_date']
-            latest_value = performance_df[metric].iloc[-1] if not performance_df.empty and metric in performance_df else 0
-            progress = (latest_value / goal_value * 100) if metric != 'aht' else (goal_value / latest_value * 100 if latest_value > 0 else 0)
-            progress = min(progress, 100)
-            goal_data.append({
-                "ID": goal_id,
-                "Metric": metric.replace('_', ' ').title(),
-                "Target Value": goal_value,
-                "Current Value": latest_value,
-                "Progress (%)": round(progress, 2),
-                "Set Date": set_date
-            })
+        # Display existing users
+        users_response = supabase.table("users").select("*").execute()
+        if users_response.data:
+            st.subheader("Current Users")
+            users_df = pd.DataFrame(users_response.data)
+            st.dataframe(users_df)
+        
+        # Form to add users
+        with st.form("user_form"):
+            st.subheader("Add New User")
+            user_email = st.text_input("Email")
+            user_role = st.selectbox("Role", ["Agent", "Manager"])
+            submit_user = st.form_submit_button("Add User")
+            
+            if submit_user and user_email:
+                try:
+                    # Insert user
+                    response = supabase.table("users").insert({"email": user_email, "role": user_role}).execute()
+                    st.success(f"User {user_email} added successfully as {user_role}!")
+                except Exception as e:
+                    st.error(f"Failed to add user: {e}")
 
-        goals_table = pd.DataFrame(goal_data)
-        st.dataframe(goals_table)
-
-        st.subheader("Update or Delete Goals")
-        for _, goal in goals_df.iterrows():
-            goal_id = goal['id']
-            metric = goal['metric']
-            goal_value = goal['goal_value']
-            with st.expander(f"Manage Goal: {metric.replace('_', ' ').title()} (Target: {goal_value})"):
-                new_value = st.number_input(
-                    f"New Target for {metric}",
-                    min_value=0.0,
-                    max_value=100.0 if metric != 'aht' else 1000.0,
-                    value=float(goal_value),
-                    key=f"update_{goal_id}"
-                )
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("Update Goal", key=f"update_btn_{goal_id}"):
-                        errors = validate_goal_input(metric, new_value)
-                        if errors:
-                            for error in errors:
-                                st.error(error)
-                        else:
-                            if update_goal(goal_id, new_value):
-                                st.success(f"Updated {metric.replace('_', ' ').title()} goal to {new_value}!")
-                                st.rerun()
-                            else:
-                                st.error("Failed to update goal.")
-                with col2:
-                    if st.button("Delete Goal", key=f"delete_btn_{goal_id}"):
-                        if delete_goal(goal_id):
-                            st.success(f"Deleted {metric.replace('_', ' ').title()} goal!")
-                            st.rerun()
-                        else:
-                            st.error("Failed to delete goal.")
-
-        st.subheader("Goal Progress")
-        for _, goal in goals_df.iterrows():
-            metric = goal['metric']
-            goal_value = goal['goal_value']
-            latest_value = performance_df[metric].iloc[-1] if not performance_df.empty and metric in performance_df else 0
-            progress = (latest_value / goal_value * 100) if metric != 'aht' else (goal_value / latest_value * 100 if latest_value > 0 else 0)
-            progress = min(progress, 100)
-            fig = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=progress,
-                title={'text': f"Progress to {metric.replace('_', ' ').title()} Goal"},
-                gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "green" if progress >= 80 else "orange"}}
-            ))
-            st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.write("No goals set yet. Use the 'Input Your Goals' section to add a new goal.")
-
-def render_agent_dashboard(agent_email: str):
-    """Render the agent dashboard."""
-    st.title(f"Agent Dashboard - {agent_email}")
-    performance_df = get_performance(agent_email)
-    kpis = get_kpis()
-
-    # Goals Section
-    render_agent_goals(agent_email)
-
-    # Metric Breakdown
-    st.header("Metric Breakdown")
-    selected_metric = st.selectbox("Select Metric to View", METRICS)
-    if not performance_df.empty:
-        fig = px.line(performance_df, x='date', y=selected_metric, title=f"Your {selected_metric.replace('_', ' ').title()} Over Time")
-        kpi_threshold = kpis.get(selected_metric, 50)
-        fig.add_hline(y=kpi_threshold, line_dash="dash", line_color="red", annotation_text=f"KPI: {kpi_threshold}")
-        st.plotly_chart(fig)
-    else:
-        st.write("No performance data available for visualization.")
-
-    # Performance Trends
-    st.header("Performance Trends")
-    if not performance_df.empty:
-        trends = {}
-        for metric in METRICS:
-            last_five = performance_df[metric].tail(5)
-            if len(last_five) >= 2:
-                trend = "Improving" if last_five.diff().mean() > 0 else "Declining" if last_five.diff().mean() < 0 else "Stable"
-                pass_status = "Pass" if (metric == 'aht' and last_five.iloc[-1] <= kpis.get(metric, 600)) or \
-                                       (metric != 'aht' and last_five.iloc[-1] >= kpis.get(metric, 50)) else "Fail"
-                trends[metric] = {"Trend": trend, "Status": pass_status}
-        trends_df = pd.DataFrame(trends).T
-        st.dataframe(trends_df.style.applymap(lambda x: 'color: red' if x == 'Fail' else 'color: green', subset=['Status']))
-
-    # Personalized Recommendations
-    st.header("Personalized Recommendations")
-    recommendations = {
-        'aht': "Reduce Average Handle Time by practicing concise communication and using CRM shortcuts.",
-        'csat': "Improve Customer Satisfaction by actively listening and personalizing customer interactions.",
-        'resolution_rate': "Boost Issue Resolution Rate by reviewing common issues and their solutions in training materials.",
-        'attendance': "Ensure consistent attendance by planning your schedule and communicating any issues early.",
-        'quality_score': "Enhance Quality Score by double-checking responses for accuracy and clarity.",
-        'product_knowledge': "Improve Product Knowledge by reviewing training materials and FAQs regularly."
-    }
-    if not performance_df.empty:
-        latest_performance = performance_df.iloc[-1]
-        for metric in METRICS:
-            if metric == 'aht' and latest_performance[metric] > kpis.get(metric, 600):
-                st.write(f"- {recommendations.get(metric, 'Work on improving this metric.')}")
-            elif metric != 'aht' and latest_performance[metric] < kpis.get(metric, 50):
-                st.write(f"- {recommendations.get(metric, 'Work on improving this metric.')}")
-    else:
-        st.write("No recommendations available yet.")
-
-    # Peer Comparison
-    st.header("Compare to Team")
-    all_performance = get_performance()
-    if not all_performance.empty:
-        team_avg = all_performance.groupby('date')[METRICS].mean().reset_index().iloc[-1]
-        agent_latest = performance_df.iloc[-1] if not performance_df.empty else pd.Series(0, index=METRICS)
-        comparison_df = pd.DataFrame({
-            'Your Score': agent_latest[METRICS],
-            'Team Average': team_avg[METRICS]
-        })
-        fig = px.bar(comparison_df, barmode='group', title="Your Performance vs. Team Average")
-        st.plotly_chart(fig)
-
-    # Feedback Submission
-    st.header("Submit Feedback")
-    with st.form("feedback_form"):
-        feedback = st.text_area("Your Feedback")
-        if st.form_submit_button("Submit"):
-            if feedback:
-                if save_feedback(agent_email, feedback):
-                    st.success("Feedback submitted!")
-                else:
-                    st.error("Failed to submit feedback.")
-            else:
-                st.warning("Please enter feedback before submitting.")
-
-    # Data Download
-    st.header("Download Your Performance Data")
-    if not performance_df.empty:
-        csv = performance_df.to_csv(index=False)
-        st.download_button(
-            label="Download CSV",
-            data=csv,
-            file_name=f"performance_{agent_email}.csv",
-            mime="text/csv"
-        )
-
-    # Training Resources
-    st.header("Training Resources")
-    if not performance_df.empty:
-        latest_performance = performance_df.iloc[-1]
-        for metric in METRICS:
-            if metric == 'aht' and latest_performance[metric] > kpis.get(metric, 600):
-                resources = get_resources(metric)
-                for res in resources:
-                    st.markdown(f"- [{res['resource_name']}]({res['resource_url']}) for {metric.replace('_', ' ').title()}")
-            elif metric != 'aht' and latest_performance[metric] < kpis.get(metric, 50):
-                resources = get_resources(metric)
-                for res in resources:
-                    st.markdown(f"- [{res['resource_name']}]({res['resource_url']}) for {metric.replace('_', ' ').title()}")
-
-    # Achievements
-    st.header("Your Achievements")
-    if not performance_df.empty:
-        latest_performance = performance_df.iloc[-1]
-        if latest_performance['attendance'] >= 100:
-            award_achievement(agent_email, "Perfect Attendance")
-        if latest_performance['csat'] >= 95:
-            award_achievement(agent_email, "CSAT Star")
-        if latest_performance['resolution_rate'] >= 90:
-            award_achievement(agent_email, "Resolution Master")
-        achievements = get_achievements(agent_email)
-        for ach in achievements:
-            st.write(f"- {ach['achievement_name']} (Earned on {ach['date_earned']})")
-    else:
-        st.write("No achievements yet.")
-
-    # Dashboard Customization
-    st.header("Customize Dashboard")
-    preferred_metrics = st.multiselect("Select Metrics to Display", METRICS, default=get_preferences(agent_email))
-    if st.button("Save Preferences"):
-        if save_preferences(agent_email, preferred_metrics):
-            st.success("Preferences saved!")
+# Agent Dashboard
+def agent_dashboard(supabase, user_email):
+    st.title("Agent Dashboard")
+    
+    # Debug button
+    if st.button("Clear Cache (Debug)"):
+        clear_cache()
+    
+    # Get performance data for this agent
+    perf_response = supabase.table("performance").select("*").eq("agent_email", user_email).execute()
+    kpis_response = supabase.table("kpis").select("*").execute()
+    
+    # Debug output
+    st.write(f"DEBUG: Performance data rows: {len(perf_response.data if perf_response.data else [])}")
+    
+    # Section: Input Your Goals
+    st.header("Input Your Goals")
+    st.write("DEBUG: Rendering Goal Input Section")
+    
+    with st.form("goal_form"):
+        st.subheader("Add a New Goal")
+        goal_metric = st.selectbox("Metric", ["attendance", "quality_score", "product_knowledge", 
+                                           "contact_success_rate", "onboarding", "reporting",
+                                           "talk_time", "resolution_rate", "aht", "csat", "call_volume"])
+        
+        # Set appropriate min/max values based on metric
+        if goal_metric == "aht":
+            goal_value = st.number_input("Target Value (seconds)", 100, 1000, 250, 10)
+        elif goal_metric == "call_volume":
+            goal_value = st.number_input("Target Value (calls)", 10, 500, 120, 5)
         else:
-            st.error("Failed to save preferences.")
+            goal_value = st.number_input("Target Value (%)", 0.0, 100.0, 90.0, 0.1)
+        
+        submit_goal = st.form_submit_button("Save Goal")
+        
+        if submit_goal:
+            try:
+                # Insert goal
+                goal_data = {
+                    "agent_email": user_email,
+                    "metric": goal_metric,
+                    "goal_value": goal_value,
+                    "set_date": datetime.now().date().isoformat()
+                }
+                
+                response = supabase.table("agent_goals").insert(goal_data).execute()
+                st.success(f"Goal for {goal_metric} added successfully!")
+            except Exception as e:
+                st.error(f"Failed to add goal: {e}")
+    
+    # Section: Manage Your Goals
+    st.header("Manage Your Goals")
+    
+    # Get goals for this agent
+    goals_response = supabase.table("agent_goals").select("*").eq("agent_email", user_email).execute()
+    
+    # Debug output
+    st.write(f"DEBUG: Goals data rows: {len(goals_response.data if goals_response.data else [])}")
+    
+    if goals_response.data:
+        goals_df = pd.DataFrame(goals_response.data)
+        
+        # Add current value from performance data
+        if perf_response.data:
+            perf_df = pd.DataFrame(perf_response.data)
+            # Get the latest performance data
+            latest_perf = perf_df.sort_values("date", ascending=False).drop_duplicates(subset=["agent_email", "date"]).reset_index(drop=True)
+            
+            # Calculate progress for each goal
+            for idx, goal in goals_df.iterrows():
+                metric = goal["metric"]
+                goal_value = goal["goal_value"]
+                
+                if metric in latest_perf.columns:
+                    current_value = latest_perf[metric].iloc[0]
+                    goals_df.at[idx, "current_value"] = current_value
+                    
+                    # Calculate progress (for AHT, lower is better)
+                    if metric == "aht":
+                        progress = min(100, max(0, (goal_value / current_value * 100)))
+                    else:
+                        progress = min(100, max(0, (current_value / goal_value * 100)))
+                    
+                    goals_df.at[idx, "progress"] = progress
+                else:
+                    goals_df.at[idx, "current_value"] = None
+                    goals_df.at[idx, "progress"] = 0
+        
+        # Display goals table
+        st.subheader("Your Goals")
+        
+        # Display each goal with update/delete options in expanders
+        for idx, goal in goals_df.iterrows():
+            with st.expander(f"Goal: {goal['metric']} - Target: {goal['goal_value']}"):
+                cols = st.columns([3, 1, 1])
+                
+                # Goal details
+                cols[0].write(f"**ID:** {goal['id']}")
+                cols[0].write(f"**Metric:** {goal['metric']}")
+                cols[0].write(f"**Target:** {goal['goal_value']}")
+                if "current_value" in goal and goal["current_value"] is not None:
+                    cols[0].write(f"**Current:** {goal['current_value']}")
+                if "progress" in goal:
+                    cols[0].write(f"**Progress:** {goal['progress']:.1f}%")
+                cols[0].write(f"**Set Date:** {goal['set_date']}")
+                
+                # Update form
+                with cols[1].form(f"update_goal_{goal['id']}"):
+                    st.write("Update Goal")
+                    if goal["metric"] == "aht":
+                        new_value = st.number_input("New Target", 100, 1000, int(goal["goal_value"]), 10)
+                    elif goal["metric"] == "call_volume":
+                        new_value = st.number_input("New Target", 10, 500, int(goal["goal_value"]), 5)
+                    else:
+                        new_value = st.number_input("New Target", 0.0, 100.0, float(goal["goal_value"]), 0.1)
+                    
+                    update_button = st.form_submit_button("Update")
+                    
+                    if update_button:
+                        try:
+                            # Update goal
+                            response = supabase.table("agent_goals").update({
+                                "goal_value": new_value,
+                                "set_date": datetime.now().date().isoformat()
+                            }).eq("id", goal["id"]).execute()
+                            st.success("Goal updated!")
+                            st.experimental_rerun()
+                        except Exception as e:
+                            st.error(f"Failed to update goal: {e}")
+                
+                # Delete button
+                with cols[2].form(f"delete_goal_{goal['id']}"):
+                    st.write("Delete Goal")
+                    delete_button = st.form_submit_button("Delete")
+                    
+                    if delete_button:
+                        try:
+                            # Delete goal
+                            response = supabase.table("agent_goals").delete().eq("id", goal["id"]).execute()
+                            st.success("Goal deleted!")
+                            st.experimental_rerun()
+                        except Exception as e:
+                            st.error(f"Failed to delete goal: {e}")
+                
+                # Progress gauge
+                if "progress" in goal:
+                    progress = goal["progress"]
+                    fig = go.Figure(go.Indicator(
+                        mode="gauge+number",
+                        value=progress,
+                        domain={"x": [0, 1], "y": [0, 1]},
+                        title={"text": f"Progress toward {goal['metric']} goal"},
+                        gauge={
+                            "axis": {"range": [0, 100]},
+                            "bar": {"color": "green" if progress >= 80 else "orange"},
+                            "steps": [
+                                {"range": [0, 50], "color": "lightgray"},
+                                {"range": [50, 80], "color": "gray"}
+                            ],
+                            "threshold": {
+                                "line": {"color": "red", "width": 4},
+                                "thickness": 0.75,
+                                "value": 80
+                            }
+                        }
+                    ))
+                    st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("You haven't set any goals yet. Use the form above to add your first goal!")
+    
+    # Section: Metric Breakdown
+    st.header("Metric Breakdown")
+    
+    if perf_response.data and kpis_response.data:
+        # Convert to dataframes
+        perf_df = pd.DataFrame(perf_response.data)
+        kpis_df = pd.DataFrame(kpis_response.data).set_index("metric")
+        
+        # Metric selection
+        available_metrics = [col for col in perf_df.columns if col not in ["id", "agent_email", "date"]]
+        selected_metric = st.selectbox("Select metric to view", available_metrics)
+        
+        # Create line chart
+        fig = px.line(
+            perf_df.sort_values("date"), 
+            x="date", 
+            y=selected_metric,
+            title=f"{selected_metric.replace('_', ' ').title()} Over Time",
+            markers=True
+        )
+        
+        # Add KPI threshold if available
+        if selected_metric in kpis_df.index:
+            threshold = kpis_df.loc[selected_metric, "threshold"]
+            fig.add_shape(
+                type="line",
+                line=dict(dash="dash", color="red", width=2),
+                y0=threshold,
+                y1=threshold,
+                x0=perf_df["date"].min(),
+                x1=perf_df["date"].max()
+            )
+            fig.add_annotation(
+                x=perf_df["date"].max(),
+                y=threshold,
+                text=f"KPI: {threshold}",
+                showarrow=False,
+                yshift=10
+            )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No performance data available yet.")
+    
+    # Section: Additional Features
+    st.header("Additional Features")
+    
+    features_tabs = st.tabs(["Performance Trends", "Recommendations", "Peer Comparison", 
+                           "Feedback", "Training Resources", "Achievements", "Customize Dashboard"])
+    
+    # Performance Trends tab
+    with features_tabs[0]:
+        st.subheader("Performance Trends")
+        
+        if perf_response.data and kpis_response.data:
+            perf_df = pd.DataFrame(perf_response.data)
+            kpis_df = pd.DataFrame(kpis_response.data).set_index("metric")
+            
+            # Get trends for last 5 data points
+            if len(perf_df) >= 2:
+                perf_df = perf_df.sort_values("date", ascending=False).head(5)
+                
+                # Calculate trends
+                trend_data = []
+                for metric in kpis_df.index:
+                    if metric in perf_df.columns:
+                        # Calculate trend (first vs last value)
+                        first_val = perf_df[metric].iloc[-1]
+                        last_val = perf_df[metric].iloc[0]
+                        
+                        if metric == "aht":  # Lower is better for AHT
+                            if last_val < first_val:
+                                trend = "Improving"
+                            elif last_val > first_val:
+                                trend = "Declining"
+                            else:
+                                trend = "Stable"
+                            
+                            status = "Pass" if last_val <= kpis_df.loc[metric, "threshold"] else "Fail"
+                        else:
+                            if last_val > first_val:
+                                trend = "Improving"
+                            elif last_val < first_val:
+                                trend = "Declining"
+                            else:
+                                trend = "Stable"
+                            
+                            status = "Pass" if last_val >= kpis_df.loc[metric, "threshold"] else "Fail"
+                        
+                        trend_data.append({
+                            "Metric": metric,
+                            "Current": last_val,
+                            "Trend": trend,
+                            "Status": status
+                        })
+                
+                trend_df = pd.DataFrame(trend_data)
+                
+                # Display with colored status
+                def highlight_status(val):
+                    if val == "Pass":
+                        return "background-color: lightgreen"
+                    elif val == "Fail":
+                        return "background-color: lightcoral"
+                    return ""
+                
+                st.dataframe(trend_df.style.applymap(highlight_status, subset=["Status"]))
+            else:
+                st.info("Not enough data points to calculate trends.")
+        else:
+            st.info("No performance data available yet.")
+    
+    # Recommendations tab
+    with features_tabs[1]:
+        st.subheader("Personalized Recommendations")
+        
+        if perf_response.data and kpis_response.data:
+            perf_df = pd.DataFrame(perf_response.data)
+            kpis_df = pd.DataFrame(kpis_response.data).set_index("metric")
+            
+            # Get latest performance
+            latest_perf = perf_df.sort_values("date", ascending=False).iloc[0]
+            
+            # Generate recommendations for failing metrics
+            recommendations = []
+            for metric in kpis_df.index:
+                if metric in latest_perf.index:
+                    threshold = kpis_df.loc[metric, "threshold"]
+                    value = latest_perf[metric]
+                    
+                    # Check if failing KPI
+                    if (metric == "aht" and value > threshold) or (metric != "aht" and value < threshold):
+                        if metric == "attendance":
+                            recommendations.append("Improve attendance by planning your schedule in advance.")
+                        elif metric == "quality_score":
+                            recommendations.append("Enhance quality by following the call script more closely.")
+                        elif metric == "product_knowledge":
+                            recommendations.append("Review product documentation to improve your knowledge.")
+                        elif metric == "contact_success_rate":
+                            recommendations.append("Focus on building rapport with customers in the first minute.")
+                        elif metric == "aht":
+                            recommendations.append("Reduce handle time by using CRM shortcuts and templates.")
+                        elif metric == "csat":
+                            recommendations.append("Improve customer satisfaction by confirming their needs are met before ending calls.")
+                        else:
+                            recommendations.append(f"Work on improving your {metric.replace('_', ' ')}.")
+            
+            if recommendations:
+                for rec in recommendations:
+                    st.write(f"• {rec}")
+            else:
+                st.success("Great job! You're meeting all KPI targets.")
+        else:
+            st.info("No performance data available yet.")
+    
+    # Peer Comparison tab
+    with features_tabs[2]:
+        st.subheader("Peer Comparison")
+        
+        if perf_response.data:
+            all_perf_response = supabase.table("performance").select("*").execute()
+            all_perf_df = pd.DataFrame(all_perf_response.data)
+            
+            # Get latest data for all agents
+            latest_dates = all_perf_df.groupby("agent_email")["date"].max().reset_index()
+            latest_data = []
+            for _, row in latest_dates.iterrows():
+                agent_data = all_perf_df[(all_perf_df["agent_email"] == row["agent_email"]) & 
+                                         (all_perf_df["date"] == row["date"])]
+                latest_data.append(agent_data.iloc[0])
+            
+            latest_df = pd.DataFrame(latest_data)
+            
+            # Calculate team averages
+            team_avg = latest_df.mean(numeric_only=True)
+            
+            # Get user's latest data
+            user_data = latest_df[latest_df["agent_email"] == user_email].iloc[0]
+            
+            # Create comparison dataframe
+            comparison_data = []
+            for metric in ["attendance", "quality_score", "csat"]:
+                comparison_data.append({
+                    "Metric": metric.replace("_", " ").title(),
+                    "Your Score": user_data[metric],
+                    "Team Average": team_avg[metric]
+                })
+            
+            comparison_df = pd.DataFrame(comparison_data)
+            
+            # Create comparison chart
+            fig = px.bar(
+                comparison_df,
+                x="Metric",
+                y=["Your Score", "Team Average"],
+                barmode="group",
+                title="Your Performance vs. Team Average",
+                labels={"value": "Score (%)", "variable": ""}
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No performance data available yet.")
+    
+    # Feedback tab
+    with features_tabs[3]:
+        st.subheader("Submit Feedback")
+        
+        with st.form("feedback_form"):
+            feedback_text = st.text_area("Share your thoughts or suggestions", height=150)
+            submit_feedback = st.form_submit_button("Submit Feedback")
+            
+            if submit_feedback and feedback_text:
+                try:
+                    # Insert feedback
+                    feedback_data = {
+                        "agent_email": user_email,
+                        "feedback": feedback_text,
+                        "submitted_date": datetime.now().date().isoformat()
+                    }
+                    
+                    response = supabase.table("agent_feedback").insert(feedback_data).execute()
+                    st.success("Feedback submitted successfully!")
+                except Exception as e:
+                    st.error(f"Failed to submit feedback: {e}")
+    
+    # Training Resources tab
+    with features_tabs[4]:
+        st.subheader("Training Resources")
+        
+        # Get training resources
+        resources_response = supabase.table("training_resources").select("*").execute()
+        
+        if resources_response.data:
+            # Display resources
+            resources_df = pd.DataFrame(resources_response.data)
+            
+            # Group by metric
+            for metric in resources_df["metric"].unique():
+                st.write(f"**{metric.replace('_', ' ').title()}**")
+                
+                metric_resources = resources_df[resources_df["metric"] == metric]
+                for _, resource in metric_resources.iterrows():
+                    st.write(f"• [{resource['resource_name']}]({resource['resource_url']})")
+        else:
+            st.info("No training resources available yet.")
+    
+    # Achievements tab
+    with features_tabs[5]:
+        st.subheader("Your Achievements")
+        
+        # Get user achievements
+        achievements_response = supabase.table("agent_achievements").select("*").eq("agent_email", user_email).execute()
+        
+        if achievements_response.data:
+            achievements_df = pd.DataFrame(achievements_response.data)
+            
+            # Display achievements
+            for _, achievement in achievements_df.iterrows():
+                st.write(f"🏆 **{achievement['achievement_name']}** - Earned on {achievement['date_earned']}")
+        else:
+            # Check if we can award any achievements based on performance
+            if perf_response.data:
+                perf_df = pd.DataFrame(perf_response.data)
+                
+                # Check for perfect attendance
+                if "attendance" in perf_df.columns and (perf_df["attendance"] >= 100).any():
+                    st.write("🏆 **Perfect Attendance** - Achieved 100% attendance")
+                
+                # Check for high CSAT
+                if "csat" in perf_df.columns and (perf_df["csat"] >= 95).any():
+                    st.write("🏆 **Customer Champion** - Achieved 95%+ CSAT")
+                
+                # Placeholder for more achievements
+                st.info("Keep up the good work to earn more achievements!")
+            else:
+                st.info("No achievements yet. Meet your performance goals to earn achievements!")
+    
+    # Customize Dashboard tab
+    with features_tabs[6]:
+        st.subheader("Customize Your Dashboard")
+        
+        # Get user preferences
+        prefs_response = supabase.table("agent_preferences").select("*").eq("agent_email", user_email).execute()
+        
+        current_prefs = []
+        if prefs_response.data:
+            current_prefs = prefs_response.data[0].get("preferred_metrics", [])
+        
+        # Form to update preferences
+        with st.form("preferences_form"):
+            metrics = ["attendance", "quality_score", "product_knowledge", "contact_success_rate", 
+                      "onboarding", "reporting", "talk_time", "resolution_rate", "aht", "csat", "call_volume"]
+            
+            selected_metrics = st.multiselect("Select metrics to display on your dashboard", metrics, default=current_prefs)
+            submit_prefs = st.form_submit_button("Save Preferences")
+            
+            if submit_prefs:
+                try:
+                    # Upsert preferences
+                    response = supabase.table("agent_preferences").upsert({
+                        "agent_email": user_email,
+                        "preferred_metrics": selected_metrics
+                    }).execute()
+                    st.success("Dashboard preferences saved!")
+                except Exception as e:
+                    st.error(f"Failed to save preferences: {e}")
+        
+        # Display custom metrics if preferences saved
+        if prefs_response.data and perf_response.data:
+            st.subheader("Your Custom Dashboard")
+            
+            perf_df = pd.DataFrame(perf_response.data).sort_values("date")
+            preferred_metrics = prefs_response.data[0].get("preferred_metrics", [])
+            
+            if preferred_metrics:
+                for metric in preferred_metrics:
+                    if metric in perf_df.columns:
+                        fig = px.line(
+                            perf_df, 
+                            x="date", 
+                            y=metric,
+                            title=f"{metric.replace('_', ' ').title()} Over Time",
+                            markers=True
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Select metrics above to customize your dashboard.")
 
-    if not performance_df.empty:
-        for metric in preferred_metrics:
-            fig = px.line(performance_df, x='date', y=metric, title=f"Your {metric.replace('_', ' ').title()} Over Time")
-            st.plotly_chart(fig)
-
-# Main App
+# Main application
 def main():
-    """Main application function."""
     st.set_page_config(page_title="Call Center Assessment System", layout="wide")
-
-    # Debugging tools
-    if st.sidebar.button("Clear Cache"):
-        st.cache_resource.clear()
-        st.cache_data.clear()
-        st.rerun()
-
-    # Initialize session state
-    if 'user' not in st.session_state:
-        st.session_state.user = None
-        st.session_state.role = None
-        st.session_state.oauth_client = None
-        st.session_state.oauth_token = None
-        st.session_state.last_activity = datetime.now()
-
-    # Check session timeout
-    check_session_timeout()
-
-    # Login/Logout
-    if not st.session_state.user:
-        render_login_page()
+    
+    # Initialize Supabase client
+    supabase = init_supabase()
+    if not supabase:
+        st.error("Failed to connect to database. Please check your connection and try again.")
         return
-
-    if st.sidebar.button("Logout"):
-        for key in ["user", "role", "oauth_client", "oauth_token", "last_activity"]:
-            st.session_state.pop(key, None)
-        st.rerun()
-
-    # Render appropriate dashboard
-    if st.session_state.role == "Manager":
-        render_manager_dashboard()
-    elif st.session_state.role == "Agent":
-        render_agent_dashboard(st.session_state.user)
+    
+    # Sidebar
+    with st.sidebar:
+        st.title("Call Center Assessment")
+        
+        # Logout button
+        if "user_email" in st.session_state:
+            if st.button("Logout"):
+                # Clear session state and redirect to login
+                st.session_state.clear()
+                st.experimental_rerun()
+    
+    # Authenticate user
+    if authenticate():
+        # Display appropriate dashboard based on role
+        if st.session_state.user_role == "Manager":
+            manager_dashboard(supabase)
+        else:
+            agent_dashboard(supabase, st.session_state.user_email)
 
 if __name__ == "__main__":
     main()
