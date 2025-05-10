@@ -151,6 +151,12 @@ def add_user(email, role):
 def main():
     st.set_page_config(page_title="Call Center Assessment System", layout="wide")
 
+    # Cache-clearing button for debugging
+    if st.button("Clear Cache"):
+        st.cache_resource.clear()
+        st.cache_data.clear()
+        st.rerun()
+
     if 'user' not in st.session_state:
         st.session_state.user = None
         st.session_state.role = None
@@ -274,6 +280,7 @@ def main():
 
     elif st.session_state.role == "Agent":
         st.title(f"Agent Dashboard - {st.session_state.user}")
+        st.write(f"DEBUG: Logged-in user: {st.session_state.user}, Role: {st.session_state.role}")
         performance_df = get_performance(st.session_state.user)
         kpis = get_kpis()
         st.write(f"DEBUG: Performance data rows: {len(performance_df)}")
@@ -284,9 +291,9 @@ def main():
             fig = px.line(results, x='date', y='overall_score', title="Your Score Over Time")
             st.plotly_chart(fig)
         else:
-            st.write("No performance data available.")
+            st.write("No performance data available. Contact your manager to input performance data.")
 
-        # Enhanced Goal Setting and Progress Tracking
+        # Enhanced Goal Setting and Management
         st.subheader("Set and Manage Your Goals")
         st.write("DEBUG: Rendering Goal Setting")
         with st.form("goal_form"):
@@ -301,11 +308,13 @@ def main():
                 else:
                     save_goal(st.session_state.user, metric, goal_value)
                     st.success(f"Goal for {metric} set to {goal_value}!")
+                    st.rerun()  # Refresh to show updated goals
 
         goals_df = get_goals(st.session_state.user)
         st.write(f"DEBUG: Goals data rows: {len(goals_df)}")
         if not goals_df.empty:
             st.write("Your Current Goals")
+            goal_data = []
             for _, goal in goals_df.iterrows():
                 goal_id = goal['id']
                 metric = goal['metric']
@@ -314,30 +323,61 @@ def main():
                 latest_value = performance_df[metric].iloc[-1] if not performance_df.empty and metric in performance_df else 0
                 progress = (latest_value / goal_value * 100) if metric != 'aht' else (goal_value / latest_value * 100 if latest_value > 0 else 0)
                 progress = min(progress, 100)
+                goal_data.append({
+                    "ID": goal_id,
+                    "Metric": metric.replace('_', ' ').title(),
+                    "Target Value": goal_value,
+                    "Current Value": latest_value,
+                    "Progress (%)": round(progress, 2),
+                    "Set Date": set_date
+                })
 
-                col1, col2, col3 = st.columns([2, 1, 1])
-                with col1:
-                    st.write(f"**{metric.replace('_', ' ').title()}**: Target = {goal_value}, Current = {latest_value:.2f}, Set on {set_date}")
-                    fig = go.Figure(go.Indicator(
-                        mode="gauge+number",
-                        value=progress,
-                        title={'text': f"Progress to {metric.replace('_', ' ').title()} Goal"},
-                        gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "green" if progress >= 80 else "orange"}}
-                    ))
-                    st.plotly_chart(fig, use_container_width=True)
-                with col2:
-                    new_value = st.number_input(f"Update {metric} Target", min_value=0.0, max_value=100.0 if metric != 'aht' else 1000.0, value=goal_value, key=f"update_{goal_id}")
-                    if st.button("Update", key=f"update_btn_{goal_id}"):
-                        update_goal(goal_id, new_value)
-                        st.success(f"Updated {metric} goal to {new_value}!")
-                with col3:
-                    if st.button("Delete", key=f"delete_btn_{goal_id}"):
-                        delete_goal(goal_id)
-                        st.success(f"Deleted {metric} goal!")
+            goals_table = pd.DataFrame(goal_data)
+            st.dataframe(goals_table)
+
+            st.write("Update or Delete Goals")
+            for _, goal in goals_df.iterrows():
+                goal_id = goal['id']
+                metric = goal['metric']
+                goal_value = goal['goal_value']
+                with st.expander(f"Manage Goal: {metric.replace('_', ' ').title()} (Target: {goal_value})"):
+                    new_value = st.number_input(f"New Target for {metric}", min_value=0.0, max_value=100.0 if metric != 'aht' else 1000.0, value=goal_value, key=f"update_{goal_id}")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("Update Goal", key=f"update_btn_{goal_id}"):
+                            if metric == 'aht' and new_value < 100:
+                                st.error("AHT target should be realistic (e.g., 100-1000 seconds).")
+                            elif metric != 'aht' and new_value > 100:
+                                st.error("Percentage metrics should be between 0 and 100.")
+                            else:
+                                update_goal(goal_id, new_value)
+                                st.success(f"Updated {metric} goal to {new_value}!")
+                                st.rerun()
+                    with col2:
+                        if st.button("Delete Goal", key=f"delete_btn_{goal_id}"):
+                            delete_goal(goal_id)
+                            st.success(f"Deleted {metric} goal!")
+                            st.rerun()
+
+            # Progress Gauges
+            st.write("Goal Progress")
+            for _, goal in goals_df.iterrows():
+                metric = goal['metric']
+                goal_value = goal['goal_value']
+                latest_value = performance_df[metric].iloc[-1] if not performance_df.empty and metric in performance_df else 0
+                progress = (latest_value / goal_value * 100) if metric != 'aht' else (goal_value / latest_value * 100 if latest_value > 0 else 0)
+                progress = min(progress, 100)
+                fig = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=progress,
+                    title={'text': f"Progress to {metric.replace('_', ' ').title()} Goal"},
+                    gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "green" if progress >= 80 else "orange"}}
+                ))
+                st.plotly_chart(fig, use_container_width=True)
         else:
-            st.write("No goals set yet.")
+            st.write("No goals set yet. Use the form above to add a new goal.")
 
-        # 1. Detailed Metric Breakdown
+        # Metric Breakdown (View Only)
         st.subheader("Metric Breakdown")
         st.write("DEBUG: Rendering Metric Breakdown")
         selected_metric = st.selectbox("Select Metric to View", metrics)
@@ -346,8 +386,10 @@ def main():
             kpi_threshold = kpis.get(selected_metric, 50)
             fig.add_hline(y=kpi_threshold, line_dash="dash", line_color="red", annotation_text=f"KPI: {kpi_threshold}")
             st.plotly_chart(fig)
+        else:
+            st.write("No performance data available for visualization.")
 
-        # 2. Performance Trends and Alerts
+        # Performance Trends and Alerts
         st.subheader("Performance Trends")
         st.write("DEBUG: Rendering Performance Trends")
         if not performance_df.empty:
@@ -362,7 +404,7 @@ def main():
             trends_df = pd.DataFrame(trends).T
             st.dataframe(trends_df.style.applymap(lambda x: 'color: red' if x == 'Fail' else 'color: green', subset=['Status']))
 
-        # 3. Personalized Recommendations
+        # Personalized Recommendations
         st.subheader("Personalized Recommendations")
         st.write("DEBUG: Rendering Recommendations")
         recommendations = {
@@ -383,7 +425,7 @@ def main():
         else:
             st.write("No recommendations available yet.")
 
-        # 4. Peer Comparison
+        # Peer Comparison
         st.subheader("Compare to Team")
         st.write("DEBUG: Rendering Peer Comparison")
         all_performance = get_performance()
@@ -397,7 +439,7 @@ def main():
             fig = px.bar(comparison_df, barmode='group', title="Your Performance vs. Team Average")
             st.plotly_chart(fig)
 
-        # 5. Feedback Submission
+        # Feedback Submission
         st.subheader("Submit Feedback")
         st.write("DEBUG: Rendering Feedback")
         with st.form("feedback_form"):
@@ -406,7 +448,7 @@ def main():
                 save_feedback(st.session_state.user, feedback)
                 st.success("Feedback submitted!")
 
-        # 6. Historical Data Download
+        # Historical Data Download
         st.subheader("Download Your Performance Data")
         st.write("DEBUG: Rendering Data Download")
         if not performance_df.empty:
@@ -418,7 +460,7 @@ def main():
                 mime="text/csv"
             )
 
-        # 7. Training Resources
+        # Training Resources
         st.subheader("Training Resources")
         st.write("DEBUG: Rendering Training Resources")
         if not performance_df.empty:
@@ -433,7 +475,7 @@ def main():
                     for res in resources:
                         st.markdown(f"- [{res['resource_name']}]({res['resource_url']}) for {metric.replace('_', ' ').title()}")
 
-        # 8. Gamification Elements
+        # Gamification Elements
         st.subheader("Your Achievements")
         st.write("DEBUG: Rendering Achievements")
         if not performance_df.empty:
@@ -450,7 +492,7 @@ def main():
         else:
             st.write("No achievements yet.")
 
-        # 9. Customizable Dashboard Widgets
+        # Customizable Dashboard Widgets
         st.subheader("Customize Dashboard")
         st.write("DEBUG: Rendering Customize Dashboard")
         preferred_metrics = st.multiselect("Select Metrics to Display", metrics, default=get_preferences(st.session_state.user))
