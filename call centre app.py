@@ -63,7 +63,17 @@ def save_kpis(supabase, kpis):
 def get_kpis(supabase):
     try:
         response = supabase.table("kpis").select("*").execute()
-        kpis = {row["metric"]: row["threshold"] for row in response.data}
+        # Ensure all values are floats (except call_volume which should be int)
+        kpis = {}
+        for row in response.data:
+            metric = row["metric"]
+            value = row["threshold"]
+            
+            # Convert to appropriate type based on metric
+            if metric == "call_volume":
+                kpis[metric] = int(float(value)) if value is not None else 50
+            else:
+                kpis[metric] = float(value) if value is not None else 0.0
         return kpis
     except Exception as e:
         st.error(f"Error retrieving KPIs: {str(e)}")
@@ -106,7 +116,19 @@ def get_performance(supabase, agent_email=None):
             response = supabase.table("performance").select("*").execute()
         
         if response.data:
-            return pd.DataFrame(response.data)
+            df = pd.DataFrame(response.data)
+            # Convert numeric columns to appropriate types
+            numeric_cols = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
+                           'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Convert call_volume to int
+            if 'call_volume' in df.columns:
+                df['call_volume'] = pd.to_numeric(df['call_volume'], errors='coerce').fillna(0).astype(int)
+            
+            return df
         else:
             return pd.DataFrame()
     except Exception as e:
@@ -227,18 +249,51 @@ def main():
         with tabs[0]:
             st.header("Set KPI Thresholds")
             kpis = get_kpis(supabase)
+            
             with st.form("kpi_form"):
-                attendance = st.number_input("Attendance (%, min)", value=kpis.get('attendance', 95.0), min_value=0.0, max_value=100.0)
-                quality_score = st.number_input("Quality Score (%, min)", value=kpis.get('quality_score', 90.0), min_value=0.0, max_value=100.0)
-                product_knowledge = st.number_input("Product Knowledge (%, min)", value=kpis.get('product_knowledge', 85.0), min_value=0.0, max_value=100.0)
-                contact_success_rate = st.number_input("Contact Success Rate (%, min)", value=kpis.get('contact_success_rate', 80.0), min_value=0.0, max_value=100.0)
-                onboarding = st.number_input("Onboarding (%, min)", value=kpis.get('onboarding', 90.0), min_value=0.0, max_value=100.0)
-                reporting = st.number_input("Reporting (%, min)", value=kpis.get('reporting', 95.0), min_value=0.0, max_value=100.0)
-                talk_time = st.number_input("CRM Talk Time (seconds, min)", value=kpis.get('talk_time', 300.0), min_value=0.0)
-                resolution_rate = st.number_input("Issue Resolution Rate (%, min)", value=kpis.get('resolution_rate', 80.0), min_value=0.0, max_value=100.0)
-                aht = st.number_input("Average Handle Time (seconds, max)", value=kpis.get('aht', 600.0), min_value=0.0)
-                csat = st.number_input("Customer Satisfaction (%, min)", value=kpis.get('csat', 85.0), min_value=0.0, max_value=100.0)
-                call_volume = st.number_input("Call Volume (calls, min)", value=kpis.get('call_volume', 50), min_value=0)
+                # Ensure all values are the correct type for number_input
+                attendance = st.number_input("Attendance (%, min)", 
+                                            value=float(kpis.get('attendance', 95.0)), 
+                                            min_value=0.0, 
+                                            max_value=100.0)
+                quality_score = st.number_input("Quality Score (%, min)", 
+                                              value=float(kpis.get('quality_score', 90.0)), 
+                                              min_value=0.0, 
+                                              max_value=100.0)
+                product_knowledge = st.number_input("Product Knowledge (%, min)", 
+                                                 value=float(kpis.get('product_knowledge', 85.0)), 
+                                                 min_value=0.0, 
+                                                 max_value=100.0)
+                contact_success_rate = st.number_input("Contact Success Rate (%, min)", 
+                                                    value=float(kpis.get('contact_success_rate', 80.0)), 
+                                                    min_value=0.0, 
+                                                    max_value=100.0)
+                onboarding = st.number_input("Onboarding (%, min)", 
+                                          value=float(kpis.get('onboarding', 90.0)), 
+                                          min_value=0.0, 
+                                          max_value=100.0)
+                reporting = st.number_input("Reporting (%, min)", 
+                                         value=float(kpis.get('reporting', 95.0)), 
+                                         min_value=0.0, 
+                                         max_value=100.0)
+                talk_time = st.number_input("CRM Talk Time (seconds, min)", 
+                                         value=float(kpis.get('talk_time', 300.0)), 
+                                         min_value=0.0)
+                resolution_rate = st.number_input("Issue Resolution Rate (%, min)", 
+                                               value=float(kpis.get('resolution_rate', 80.0)), 
+                                               min_value=0.0, 
+                                               max_value=100.0)
+                aht = st.number_input("Average Handle Time (seconds, max)", 
+                                   value=float(kpis.get('aht', 600.0)), 
+                                   min_value=0.0)
+                csat = st.number_input("Customer Satisfaction (%, min)", 
+                                    value=float(kpis.get('csat', 85.0)), 
+                                    min_value=0.0, 
+                                    max_value=100.0)
+                call_volume = st.number_input("Call Volume (calls, min)", 
+                                           value=int(kpis.get('call_volume', 50)), 
+                                           min_value=0)
+                
                 if st.form_submit_button("Save KPIs"):
                     new_kpis = {
                         'attendance': attendance,
