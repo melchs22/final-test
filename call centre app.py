@@ -375,6 +375,16 @@ def main():
                 kpis = get_kpis(supabase)
                 results = assess_performance(performance_df, kpis)
                 st.dataframe(results)
+                
+                # Add download button for all agent performance
+                csv = results.to_csv(index=False)
+                st.download_button(
+                    label="Download All Agent Performance as CSV",
+                    data=csv,
+                    file_name=f"agent_performance_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+                
                 st.subheader("Performance Overview")
                 try:
                     fig = px.bar(results, x='agent_email', y='overall_score', color='agent_email', 
@@ -399,10 +409,39 @@ def main():
         st.title(f"Agent Dashboard - {st.session_state.user}")
         st.write(f"Debug: Current user email: {st.session_state.user}")  # Debugging output
         
+        # Get individual agent performance
         performance_df = get_performance(supabase, st.session_state.user)
+        # Get all agents' performance for comparison
+        all_performance_df = get_performance(supabase)  # Fetch all agents' data
+        
         if not performance_df.empty:
             kpis = get_kpis(supabase)
             results = assess_performance(performance_df, kpis)
+            
+            # Aggregate individual performance data to monthly
+            results['date'] = pd.to_datetime(results['date'])
+            monthly_results = results.groupby([results['date'].dt.to_period('M'), 'agent_email']).agg({
+                'overall_score': 'mean',
+                'quality_score': 'mean',
+                'attendance': 'mean',
+                'resolution_rate': 'mean',
+                'product_knowledge': 'mean',
+                'contact_success_rate': 'mean',
+                'aht': 'mean',
+                'csat': 'mean',
+                'talk_time': 'mean',
+                'call_volume': 'mean'
+            }).reset_index()
+            monthly_results['date'] = monthly_results['date'].dt.to_timestamp()
+            
+            # Aggregate all agents' performance to monthly for comparison
+            if not all_performance_df.empty:
+                all_performance_df['date'] = pd.to_datetime(all_performance_df['date'])
+                all_monthly_results = all_performance_df.groupby(all_performance_df['date'].dt.to_period('M')).agg({
+                    'overall_score': 'mean'
+                }).reset_index()
+                all_monthly_results['date'] = all_monthly_results['date'].dt.to_timestamp()
+                all_monthly_results['agent_email'] = 'All Agents (Average)'
             
             # Display latest performance metrics
             st.subheader("Your Performance Metrics")
@@ -427,10 +466,33 @@ def main():
             st.dataframe(results)
             
             try:
-                # Performance over time
-                st.subheader("Your Score Over Time")
-                fig = px.line(results, x='date', y='overall_score', title="Your Score Trend", 
-                            labels={'overall_score': 'Score (%)'})
+                # Monthly Performance over time with comparison to all agents
+                st.subheader("Your Monthly Score Over Time vs All Agents")
+                if not all_performance_df.empty:
+                    # Combine individual and all agents' data for plotting
+                    combined_results = pd.concat([
+                        monthly_results[['date', 'overall_score', 'agent_email']],
+                        all_monthly_results[['date', 'overall_score', 'agent_email']]
+                    ])
+                    fig = px.line(
+                        combined_results,
+                        x='date',
+                        y='overall_score',
+                        color='agent_email',
+                        title="Your Monthly Score vs All Agents Average",
+                        labels={'overall_score': 'Score (%)', 'date': 'Month'},
+                        line_dash_map={'All Agents (Average)': 'dash'}  # Dashed line for all agents
+                    )
+                else:
+                    # Fallback to only individual agent if no other data
+                    fig = px.line(
+                        monthly_results,
+                        x='date',
+                        y='overall_score',
+                        color='agent_email',
+                        title="Your Monthly Score Trend",
+                        labels={'overall_score': 'Score (%)', 'date': 'Month'}
+                    )
                 st.plotly_chart(fig)
                 
                 # Metrics by category
@@ -440,6 +502,26 @@ def main():
                 metrics_df.columns = ['Metric', 'Average']
                 fig2 = px.bar(metrics_df, x='Metric', y='Average', title="Your Average Metrics")
                 st.plotly_chart(fig2)
+                
+                # Comparison Table: Individual vs All Agents (Latest Month)
+                st.subheader("Your Performance vs All Agents (Latest Month)")
+                if not all_performance_df.empty and not monthly_results.empty:
+                    latest_month = monthly_results['date'].max()
+                    individual_latest = monthly_results[monthly_results['date'] == latest_month]
+                    all_latest = all_monthly_results[all_monthly_results['date'] == latest_month]
+                    
+                    if not individual_latest.empty and not all_latest.empty:
+                        comparison_df = pd.DataFrame({
+                            'Metric': ['Overall Score'],
+                            'Your Score (%)': [individual_latest['overall_score'].iloc[0]],
+                            'All Agents Average (%)': [all_latest['overall_score'].iloc[0]]
+                        })
+                        st.dataframe(comparison_df)
+                    else:
+                        st.info("Not enough data for latest month comparison.")
+                else:
+                    st.info("No data available for comparison with other agents.")
+                    
             except Exception as e:
                 st.error(f"Error plotting data: {str(e)}")
                 st.write("Raw data:")
