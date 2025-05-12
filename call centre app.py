@@ -399,7 +399,7 @@ def main():
         st.title(f"Agent Dashboard - {st.session_state.user}")
         
         # Display image for josephkavuma606@gmail.com
-        if st.session_state.user == "josephkavuma606@gmail.com":
+        if st.session_state.user == "Joseph Kavuma":
             try:
                 st.image("Joseph.jpg", caption="Agent Profile", width=150)
             except Exception as e:
