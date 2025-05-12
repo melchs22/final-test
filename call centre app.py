@@ -242,7 +242,7 @@ def main():
     # Logout button in sidebar
     if st.sidebar.button("Logout"):
         st.session_state.user = None
-        st.session_state.r2015-05-12ole = None
+        st.session_state.role = None
         st.rerun()
     
     # Display current user info
