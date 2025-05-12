@@ -140,7 +140,7 @@ def get_performance(supabase, agent_email=None):
             return pd.DataFrame()
     except Exception as e:
         st.error(f"Error retrieving performance data: {str(e)}")
-        if "2015-05-12 violates row-level security policy" in str(e):
+        if "violates row-level security policy" in str(e):
             st.error("RLS policy is preventing data access. Ensure you have a policy allowing agents to view their own performance data.")
         return pd.DataFrame()
 
@@ -242,7 +242,7 @@ def main():
     # Logout button in sidebar
     if st.sidebar.button("Logout"):
         st.session_state.user = None
-        st.session_state.role = None
+        st.session_state.r2015-05-12ole = None
         st.rerun()
     
     # Display current user info
@@ -401,7 +401,7 @@ def main():
         # Display image for josephkavuma606@gmail.com
         if st.session_state.user == "josephkavuma606@gmail.com":
             try:
-                st.image("joseph.jpg", caption="Agent Profile", width=200)
+                st.image("joseph.jpg", caption="Agent Profile", width=150)
             except Exception as e:
                 st.error(f"Error loading image: {str(e)}")
         
@@ -435,7 +435,7 @@ def main():
                 st.metric("Talk Time", f"{avg_metrics['talk_time']:.1f} sec")
                 st.metric("Call Volume", f"{total_call_volume:.0f} calls")
             
-            # Show full history
+            # show full history
             st.subheader("Your Performance History")
             st.dataframe(results)
             
