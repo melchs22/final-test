@@ -125,7 +125,7 @@ def get_performance(supabase, agent_email=None):
             # Convert numeric columns to appropriate types
             numeric_cols = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
                            'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat']
-            for col in numericFOUNDational numeric_cols:
+            for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
