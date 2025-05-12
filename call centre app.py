@@ -401,7 +401,7 @@ def main():
         # Display image for josephkavuma606@gmail.com
         if st.session_state.user == "josephkavuma606@gmail.com":
             try:
-                st.image("joseph.jpg", caption="Agent Profile", width=150)
+                st.image("Joseph.jpg", caption="Agent Profile", width=150)
             except Exception as e:
                 st.error(f"Error loading image: {str(e)}")
         
