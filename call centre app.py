@@ -108,7 +108,7 @@ def save_performance(supabase, agent_email, data):
             st.error("You don't have permission to add performance data. Check your role superposition or RLS policies.")
         return False
 
-# Get performance data with enhanced error handling
+# Get performance data with enhanced error handling (debug messages removed)
 def get_performance(supabase, agent_email=None):
     try:
         if agent_email:
@@ -364,94 +364,14 @@ def main():
 
         # View Assessments
         with tabs[2]:
-            st.header("Call Center Agent Quality Scorecard")
+            st.header("Assessment Results")
             performance_df = get_performance(supabase)
             if not performance_df.empty:
                 kpis = get_kpis(supabase)
                 results = assess_performance(performance_df, kpis)
-
-                # Map metrics to scorecard terms
-                metric_map = {
-                    'talk_time': 'Time to Answer',
-                    'contact_success_rate': 'Abandon Rate (%)',
-                    'resolution_rate': 'FCR'
-                }
-
-                # Section 01: Individual Agent Performance
-                st.subheader("01. Individual Agent Performance (Jan)")
-                col1, col2, col3, col4 = st.columns(4)
-                agents = results['agent_email'].unique()
-                with col1:
-                    st.image("https://via.placeholder.com/50", caption="Agent 1")
-                with col2:
-                    st.image("https://via.placeholder.com/50", caption="Agent 2")
-                with col3:
-                    st.image("https://via.placeholder.com/50", caption="Agent 3")
-                with col4:
-                    st.image("https://via.placeholder.com/50", caption="Agent 4")
-
-                # Latest data for each agent
-                latest_data = results.groupby('agent_email').apply(lambda x: x.sort_values('date').iloc[-1])
-                for metric, display_name in metric_map.items():
-                    col1.metric(display_name, f"{latest_data.loc[agents[0]][metric]:.0f}" if len(agents) > 0 else "N/A")
-                    col2.metric(display_name, f"{latest_data.loc[agents[1]][metric]:.0f}" if len(agents) > 1 else "N/A")
-                    col3.metric(display_name, f"{latest_data.loc[agents[2]][metric]:.0f}" if len(agents) > 2 else "N/A")
-                    col4.metric(display_name, f"{latest_data.loc[agents[3]][metric]:.0f}" if len(agents) > 3 else "N/A")
-
-                # Section 02: Setup Targets
-                st.subheader("02. Setup")
-                col1, col2 = st.columns(2)
-                with col1:
-                    for metric, display_name in metric_map.items():
-                        target = kpis.get(metric, 0)
-                        st.metric(display_name, f"{target:.0f}")
-                with col2:
-                    for metric, display_name in metric_map.items():
-                        target = kpis.get(metric, 0) * 1.25  # Example adjustment
-                        st.metric(display_name, f"{target:.0f}")
-
-                # Section 03: Branch Performance
-                st.subheader("03. Branch Performance - KPI between W9 to W20")
-                # Simulate weekly data (simplified, adjust based on actual data)
-                weekly_data = results.groupby(results['date'].dt.isocalendar().week)['overall_score'].mean().reset_index()
-                weekly_data = weekly_data.sort_values('week')
-                fig = px.bar(weekly_data, x='week', y='overall_score', title="Branch Performance (W9-W20)",
-                            labels={'week': 'Week', 'overall_score': 'Score (%)'})
-                st.plotly_chart(fig)
-
-                # Section 04: Individual Variance
-                st.subheader("04. Individual Variance")
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.write("Agent 1")
-                    for metric, display_name in metric_map.items():
-                        value = latest_data.loc[agents[0]][metric] if len(agents) > 0 else 0
-                        target = kpis.get(metric, 0)
-                        variance = ((value - target) / target * 100) if target != 0 else 0
-                        st.metric(display_name, f"{variance:.1f}%")
-                with col2:
-                    st.write("Agent 2")
-                    for metric, display_name in metric_map.items():
-                        value = latest_data.loc[agents[1]][metric] if len(agents) > 1 else 0
-                        target = kpis.get(metric, 0)
-                        variance = ((value - target) / target * 100) if target != 0 else 0
-                        st.metric(display_name, f"{variance:.1f}%")
-                with col3:
-                    st.write("Agent 3")
-                    for metric, display_name in metric_map.items():
-                        value = latest_data.loc[agents[2]][metric] if len(agents) > 2 else 0
-                        target = kpis.get(metric, 0)
-                        variance = ((value - target) / target * 100) if target != 0 else 0
-                        st.metric(display_name, f"{variance:.1f}%")
-                with col4:
-                    st.write("Agent 4")
-                    for metric, display_name in metric_map.items():
-                        value = latest_data.loc[agents[3]][metric] if len(agents) > 3 else 0
-                        target = kpis.get(metric, 0)
-                        variance = ((value - target) / target * 100) if target != 0 else 0
-                        st.metric(display_name, f"{variance:.1f}%")
-
-                # Retain download functionality
+                st.dataframe(results)
+                
+                # Add download button for all agent performance
                 csv = results.to_csv(index=False)
                 st.download_button(
                     label="Download All Agent Performance as CSV",
@@ -459,6 +379,23 @@ def main():
                     file_name=f"agent_performance_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv"
                 )
+                
+                st.subheader("Performance Overview")
+                try:
+                    fig = px.bar(results, x='agent_email', y='overall_score', color='agent_email', 
+                                title="Agent Overall Scores", labels={'overall_score': 'Score (%)'})
+                    st.plotly_chart(fig)
+                    
+                    # Add date filtering
+                    if 'date' in results.columns:
+                        st.subheader("Performance Trends")
+                        dates = sorted(results['date'].unique())
+                        if len(dates) > 1:
+                            fig2 = px.line(results, x='date', y='overall_score', color='agent_email',
+                                          title="Score Trends Over Time", labels={'overall_score': 'Score (%)'})
+                            st.plotly_chart(fig2)
+                except Exception as e:
+                    st.error(f"Error plotting data: {str(e)}")
             else:
                 st.info("No performance data available yet. Add performance data in the 'Input Performance' tab.")
 
