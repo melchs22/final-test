@@ -4,17 +4,15 @@ import plotly.express as px
 from datetime import datetime
 import os
 from supabase import create_client, Client
+import bcrypt
 
 # Supabase initialization with better error handling
 def init_supabase():
     try:
         url = st.secrets["supabase"]["url"]
         key = st.secrets["supabase"]["key"]
-        
-        # Make sure URL includes https:// prefix
         if not url.startswith("https://"):
             url = f"https://{url}"
-            
         return create_client(url, key)
     except Exception as e:
         st.error(f"Failed to connect to Supabase: {str(e)}")
@@ -24,33 +22,25 @@ def init_supabase():
             st.error("Could not access Supabase credentials in st.secrets. Make sure you've set up your .streamlit/secrets.toml file correctly.")
         raise e
 
-# Safe database check - doesn't try to create/insert data
+# Safe database check
 def check_db(supabase):
     try:
-        # Just check if tables exist by attempting to read
         user_response = supabase.table("users").select("count").limit(1).execute()
         kpi_response = supabase.table("kpis").select("count").limit(1).execute()
         perf_response = supabase.table("performance").select("count").limit(1).execute()
-        
         st.sidebar.success("✅ Connected to database successfully")
     except Exception as e:
         st.sidebar.error(f"Database check error: {str(e)}")
         st.sidebar.info("If tables don't exist, please run the SQL setup script in Supabase")
 
-def get_db_connection():
-    return init_supabase()
-
 # Save KPIs with error handling
 def save_kpis(supabase, kpis):
     try:
         for metric, threshold in kpis.items():
-            # Check if KPI exists
             response = supabase.table("kpis").select("*").eq("metric", metric).execute()
             if len(response.data) == 0:
-                # KPI doesn't exist, insert
                 supabase.table("kpis").insert({"metric": metric, "threshold": threshold}).execute()
             else:
-                # KPI exists, update
                 supabase.table("kpis").update({"threshold": threshold}).eq("metric", metric).execute()
         return True
     except Exception as e:
@@ -63,13 +53,10 @@ def save_kpis(supabase, kpis):
 def get_kpis(supabase):
     try:
         response = supabase.table("kpis").select("*").execute()
-        # Ensure all values are floats (except call_volume which should be int)
         kpis = {}
         for row in response.data:
             metric = row["metric"]
             value = row["threshold"]
-            
-            # Convert to appropriate type based on metric
             if metric == "call_volume":
                 kpis[metric] = int(float(value)) if value is not None else 50
             else:
@@ -98,8 +85,7 @@ def save_performance(supabase, agent_email, data):
             "call_volume": data['call_volume'],
             "date": date
         }
-        
-        response = supabase.table("performance").insert(performance_data).execute()
+        supabase.table("performance").insert(performance_data).execute()
         return True
     except Exception as e:
         st.error(f"Error saving performance data: {str(e)}")
@@ -114,20 +100,15 @@ def get_performance(supabase, agent_email=None):
             response = supabase.table("performance").select("*").eq("agent_email", agent_email).execute()
         else:
             response = supabase.table("performance").select("*").execute()
-        
         if response.data:
             df = pd.DataFrame(response.data)
-            # Convert numeric columns to appropriate types
-            numeric_cols = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
+            numeric_cols = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
                            'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat']
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            # Convert call_volume to int
             if 'call_volume' in df.columns:
                 df['call_volume'] = pd.to_numeric(df['call_volume'], errors='coerce').fillna(0).astype(int)
-            
             return df
         else:
             return pd.DataFrame()
@@ -139,54 +120,91 @@ def get_performance(supabase, agent_email=None):
 def assess_performance(performance_df, kpis):
     if performance_df.empty:
         return performance_df
-        
     results = performance_df.copy()
-    metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
+    metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
                'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'csat', 'call_volume']
-    
     for metric in metrics:
         if metric in results.columns:
             if metric == 'aht':
                 results[f'{metric}_pass'] = results[metric] <= kpis.get(metric, 600)
             else:
                 results[f'{metric}_pass'] = results[metric] >= kpis.get(metric, 50)
-    
-    # Only calculate if all required columns exist
     pass_columns = [f'{m}_pass' for m in metrics if f'{m}_pass' in results.columns]
     if pass_columns:
         results['overall_score'] = results[pass_columns].mean(axis=1) * 100
-    
     return results
 
-# Improved authentication with Supabase Auth
+# Authenticate user with hashed password
 def authenticate_user(supabase, email, password):
     try:
-        # First try proper Supabase Auth if it's set up
-        try:
-            response = supabase.auth.sign_in_with_password({
-                "email": email,
-                "password": password
-            })
-            user = response.user
-            
-            # Get role from users table
-            user_data = supabase.table("users").select("*").eq("email", email).execute()
-            if user_data.data:
-                role = user_data.data[0]["role"]
-            else:
-                role = "User"  # Default role
-                
-            return True, email, role
-        except Exception as auth_e:
-            # Fallback to simple check (for demo only - not secure)
-            user_response = supabase.table("users").select("*").eq("email", email).execute()
-            if user_response.data:
-                return True, email, user_response.data[0]["role"]
+        user_response = supabase.table("users").select("email, password, role").eq("email", email).execute()
+        if user_response.data:
+            user = user_response.data[0]
+            stored_password = user["password"].encode('utf-8')
+            input_password = password.encode('utf-8')
+            if bcrypt.checkpw(input_password, stored_password):
+                return True, user["email"], user["role"]
             else:
                 return False, None, None
+        else:
+            return False, None, None
     except Exception as e:
         st.error(f"Authentication error: {str(e)}")
         return False, None, None
+
+# Create or update user with hashed password
+def create_or_update_user(supabase, email, password, role):
+    try:
+        # Validate inputs
+        if not email or not password or role not in ["Manager", "Agent"]:
+            return False, "Invalid email, password, or role"
+        
+        # Hash the password
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
+        # Check if the user exists
+        user_response = supabase.table("users").select("*").eq("email", email).execute()
+        
+        if user_response.data:
+            # Update existing user
+            supabase.table("users").update({
+                "password": hashed_password,
+                "role": role
+            }).eq("email", email).execute()
+            return True, f"Updated user {email}"
+        else:
+            # Insert new user
+            supabase.table("users").insert({
+                "email": email,
+                "password": hashed_password,
+                "role": role
+            }).execute()
+            return True, f"Created user {email}"
+    except Exception as e:
+        return False, f"Error creating/updating user: {str(e)}"
+
+# Change user password
+def change_password(supabase, email, current_password, new_password):
+    try:
+        # Authenticate current password
+        success, _, _ = authenticate_user(supabase, email, current_password)
+        if not success:
+            return False, "Current password is incorrect"
+        
+        # Validate new password (e.g., minimum length)
+        if len(new_password) < 8:
+            return False, "New password must be at least 8 characters long"
+        
+        # Hash new password
+        hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
+        # Update password
+        supabase.table("users").update({
+            "password": hashed_password
+        }).eq("email", email).execute()
+        return True, "Password updated successfully"
+    except Exception as e:
+        return False, f"Error updating password: {str(e)}"
 
 # Streamlit app
 def main():
@@ -195,7 +213,6 @@ def main():
     # Initialize Supabase client
     try:
         supabase = init_supabase()
-        # Safe check that doesn't modify data
         check_db(supabase)
     except Exception as e:
         st.error(f"Failed to connect to Supabase: {str(e)}")
@@ -206,16 +223,13 @@ def main():
         st.session_state.user = None
         st.session_state.role = None
 
-    # Auth via Supabase Auth UI (redirected back to this app)
+    # Login interface
     if not st.session_state.user:
         st.title("Login")
-        
-        # Simple login form (you can expand this to use Supabase Auth UI)
         with st.form("login_form"):
             email = st.text_input("Email")
             password = st.text_input("Password", type="password")
             submit = st.form_submit_button("Login")
-            
             if submit:
                 success, user, role = authenticate_user(supabase, email, password)
                 if success:
@@ -225,75 +239,77 @@ def main():
                     st.rerun()
                 else:
                     st.error("Login failed. Invalid credentials or user not found.")
-        
-        # Note about Supabase Auth
-        st.info("Note: For production, you should use Supabase Authentication which provides secure user management.")
         return
 
-    # Logout button in sidebar
+    # Sidebar with logout
     if st.sidebar.button("Logout"):
         st.session_state.user = None
         st.session_state.role = None
         st.rerun()
     
-    # Display current user info
     st.sidebar.info(f"Logged in as: {st.session_state.user}")
     st.sidebar.info(f"Role: {st.session_state.role}")
+
+    # Change Password in Sidebar
+    with st.sidebar.expander("Change Password"):
+        with st.form("change_password_form"):
+            current_password = st.text_input("Current Password", type="password")
+            new_password = st.text_input("New Password", type="password")
+            confirm_password = st.text_input("Confirm New Password", type="password")
+            submit_password = st.form_submit_button("Update Password")
+            if submit_password:
+                if new_password != confirm_password:
+                    st.error("New passwords do not match")
+                else:
+                    success, message = change_password(supabase, st.session_state.user, current_password, new_password)
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
 
     # Manager interface
     if st.session_state.role == "Manager":
         st.title("Manager Dashboard")
-        tabs = st.tabs(["Set KPIs", "Input Performance", "View Assessments"])
+        tabs = st.tabs(["Set KPIs", "Input Performance", "View Assessments", "Manage Users"])
 
         # Set KPIs
         with tabs[0]:
             st.header("Set KPI Thresholds")
             kpis = get_kpis(supabase)
-            
             with st.form("kpi_form"):
-                # Ensure all values are the correct type for number_input
                 attendance = st.number_input("Attendance (%, min)", 
                                             value=float(kpis.get('attendance', 95.0)), 
-                                            min_value=0.0, 
-                                            max_value=100.0)
+                                            min_value=0.0, max_value=100.0)
                 quality_score = st.number_input("Quality Score (%, min)", 
                                               value=float(kpis.get('quality_score', 90.0)), 
-                                              min_value=0.0, 
-                                              max_value=100.0)
+                                              min_value=0.0, max_value=100.0)
                 product_knowledge = st.number_input("Product Knowledge (%, min)", 
                                                  value=float(kpis.get('product_knowledge', 85.0)), 
-                                                 min_value=0.0, 
-                                                 max_value=100.0)
+                                                 min_value=0.0, max_value=100.0)
                 contact_success_rate = st.number_input("Contact Success Rate (%, min)", 
                                                     value=float(kpis.get('contact_success_rate', 80.0)), 
-                                                    min_value=0.0, 
-                                                    max_value=100.0)
+                                                    min_value=0.0, max_value=100.0)
                 onboarding = st.number_input("Onboarding (%, min)", 
                                           value=float(kpis.get('onboarding', 90.0)), 
-                                          min_value=0.0, 
-                                          max_value=100.0)
+                                          min_value=0.0, max_value=100.0)
                 reporting = st.number_input("Reporting (%, min)", 
                                          value=float(kpis.get('reporting', 95.0)), 
-                                         min_value=0.0, 
-                                         max_value=100.0)
+                                         min_value=0.0, max_value=100.0)
                 talk_time = st.number_input("CRM Talk Time (seconds, min)", 
                                          value=float(kpis.get('talk_time', 300.0)), 
                                          min_value=0.0)
                 resolution_rate = st.number_input("Issue Resolution Rate (%, min)", 
                                                value=float(kpis.get('resolution_rate', 80.0)), 
-                                               min_value=0.0, 
-                                               max_value=100.0)
+                                               min_value=0.0, max_value=100.0)
                 aht = st.number_input("Average Handle Time (seconds, max)", 
                                    value=float(kpis.get('aht', 600.0)), 
                                    min_value=0.0)
                 csat = st.number_input("Customer Satisfaction (%, min)", 
                                     value=float(kpis.get('csat', 85.0)), 
-                                    min_value=0.0, 
-                                    max_value=100.0)
+                                    min_value=0.0, max_value=100.0)
                 call_volume = st.number_input("Call Volume (calls, min)", 
                                            value=int(kpis.get('call_volume', 50)), 
                                            min_value=0)
-                
                 if st.form_submit_button("Save KPIs"):
                     new_kpis = {
                         'attendance': attendance,
@@ -317,12 +333,10 @@ def main():
         with tabs[1]:
             st.header("Input Agent Performance")
             try:
-                # Get agents
                 response = supabase.table("users").select("*").eq("role", "Agent").execute()
                 agents = [user["email"] for user in response.data]
-                
                 if not agents:
-                    st.warning("No agents found in the system. Please add agents in the Supabase dashboard.")
+                    st.warning("No agents found in the system. Please add agents in the Manage Users tab.")
                 else:
                     with st.form("performance_form"):
                         agent = st.selectbox("Select Agent", agents)
@@ -333,6 +347,13 @@ def main():
                         onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0)
                         reporting = st.number_input("Reporting (%)", min_value=0.0, max_value=100.0)
                         talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)
+                        resolution_rate =───(Continued below due to character limit)
+
+---
+
+Due to the character limit, I'll continue the remaining code here, ensuring the complete application is provided. The above code includes the imports, Supabase initialization, core functions, authentication, password management, and the beginning of the `main` function up to the "Input Performance" tab in the Manager interface. Below is the continuation of the `main` function, completing the Manager interface and adding the Agent interface.
+
+```python
                         resolution_rate = st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0)
                         aht = st.number_input("Average Handle Time (seconds)", min_value=0.0)
                         csat = st.number_input("Customer Satisfaction (%)", min_value=0.0, max_value=100.0)
@@ -371,8 +392,6 @@ def main():
                     fig = px.bar(results, x='agent_email', y='overall_score', color='agent_email', 
                                 title="Agent Overall Scores", labels={'overall_score': 'Score (%)'})
                     st.plotly_chart(fig)
-                    
-                    # Add date filtering
                     if 'date' in results.columns:
                         st.subheader("Performance Trends")
                         dates = sorted(results['date'].unique())
@@ -385,6 +404,29 @@ def main():
             else:
                 st.info("No performance data available yet. Add performance data in the 'Input Performance' tab.")
 
+        # Manage Users
+        with tabs[3]:
+            st.header("Manage Users")
+            with st.form("user_management_form"):
+                email = st.text_input("User Email")
+                password = st.text_input("Password", type="password")
+                confirm_password = st.text_input("Confirm Password", type="password")
+                role = st.selectbox("Role", ["Manager", "Agent"])
+                submit = st.form_submit_button("Create/Update User")
+                if submit:
+                    if not email or not password or not role:
+                        st.error("Please fill in all fields.")
+                    elif password != confirm_password:
+                        st.error("Passwords do not match.")
+                    elif len(password) < 8:
+                        st.error("Password must be at least 8 characters long.")
+                    else:
+                        success, message = create_or_update_user(supabase, email, password, role)
+                        if success:
+                            st.success(message)
+                        else:
+                            st.error(message)
+
     # Agent interface
     elif st.session_state.role == "Agent":
         st.title(f"Agent Dashboard - {st.session_state.user}")
@@ -392,11 +434,8 @@ def main():
         if not performance_df.empty:
             kpis = get_kpis(supabase)
             results = assess_performance(performance_df, kpis)
-            
-            # Display latest performance metrics
             st.subheader("Your Performance Metrics")
             latest = results.sort_values('date', ascending=False).iloc[0]
-            
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Overall Score", f"{latest['overall_score']:.1f}%")
@@ -410,19 +449,13 @@ def main():
                 st.metric("Average Handle Time", f"{latest['aht']} sec")
                 st.metric("Talk Time", f"{latest['talk_time']} sec")
                 st.metric("Call Volume", f"{latest['call_volume']} calls")
-            
-            # Show full history
             st.subheader("Your Performance History")
             st.dataframe(results)
-            
             try:
-                # Performance over time
                 st.subheader("Your Score Over Time")
                 fig = px.line(results, x='date', y='overall_score', title="Your Score Trend", 
                             labels={'overall_score': 'Score (%)'})
                 st.plotly_chart(fig)
-                
-                # Metrics by category
                 st.subheader("Performance by Category")
                 metrics_df = results[['quality_score', 'attendance', 'resolution_rate', 
                                    'product_knowledge', 'contact_success_rate']].mean().reset_index()
