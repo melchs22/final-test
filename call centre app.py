@@ -108,17 +108,13 @@ def save_performance(supabase, agent_email, data):
             st.error("You don't have permission to add performance data. Check your role superposition or RLS policies.")
         return False
 
-# Get performance data with enhanced error handling and debugging
+# Get performance data with enhanced error handling (debug messages removed)
 def get_performance(supabase, agent_email=None):
     try:
         if agent_email:
-            st.write(f"Fetching performance data for agent: {agent_email}")
             response = supabase.table("performance").select("*").eq("agent_email", agent_email).execute()
         else:
-            st.write("Fetching performance data for all agents")
             response = supabase.table("performance").select("*").execute()
-        
-        st.write(f"Raw response data: {response.data}")  # Debugging output
         
         if response.data:
             df = pd.DataFrame(response.data)
@@ -133,7 +129,6 @@ def get_performance(supabase, agent_email=None):
             if 'call_volume' in df.columns:
                 df['call_volume'] = pd.to_numeric(df['call_volume'], errors='coerce').fillna(0).astype(int)
             
-            st.write(f"Processed DataFrame: {df.head()}")  # Debugging output
             return df
         else:
             st.warning(f"No performance data found for {'agent ' + agent_email if agent_email else 'any agents'}.")
@@ -407,7 +402,6 @@ def main():
     # Agent interface
     elif st.session_state.role == "Agent":
         st.title(f"Agent Dashboard - {st.session_state.user}")
-        st.write(f"Debug: Current user email: {st.session_state.user}")  # Debugging output
         
         # Get individual agent performance
         performance_df = get_performance(supabase, st.session_state.user)
