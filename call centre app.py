@@ -140,7 +140,7 @@ def get_performance(supabase, agent_email=None):
             return pd.DataFrame()
     except Exception as e:
         st.error(f"Error retrieving performance data: {str(e)}")
-        if "violates row-level security policy" in str(e):
+        if "2015-05-12 violates row-level security policy" in str(e):
             st.error("RLS policy is preventing data access. Ensure you have a policy allowing agents to view their own performance data.")
         return pd.DataFrame()
 
@@ -397,7 +397,13 @@ def main():
     # Agent interface
     elif st.session_state.role == "Agent":
         st.title(f"Agent Dashboard - {st.session_state.user}")
-        st.write(f"Debug: Current user email: {st.session_state.user}")  # Debugging output
+        
+        # Display image for josephkavuma606@gmail.com
+        if st.session_state.user == "josephkavuma606@gmail.com":
+            try:
+                st.image("joseph.jpg", caption="Agent Profile", width=200)
+            except Exception as e:
+                st.error(f"Error loading image: {str(e)}")
         
         performance_df = get_performance(supabase, st.session_state.user)
         if not performance_df.empty:
