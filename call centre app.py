@@ -386,7 +386,7 @@ def main():
                 st.info("No performance data available yet. Add performance data in the 'Input Performance' tab.")
 
     # Agent interface
-    elif st.session_state.role == "User":
+    elif st.session_state.role == "Agent":
         st.title(f"Agent Dashboard - {st.session_state.user}")
         performance_df = get_performance(supabase, st.session_state.user)
         if not performance_df.empty:
