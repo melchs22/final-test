@@ -346,14 +346,7 @@ def main():
                         contact_success_rate = st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0)
                         onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0)
                         reporting = st.number_input("Reporting (%)", min_value=0.0, max_value=100.0)
-                        talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)
-                        resolution_rate =───(Continued below due to character limit)
-
----
-
-Due to the character limit, I'll continue the remaining code here, ensuring the complete application is provided. The above code includes the imports, Supabase initialization, core functions, authentication, password management, and the beginning of the `main` function up to the "Input Performance" tab in the Manager interface. Below is the continuation of the `main` function, completing the Manager interface and adding the Agent interface.
-
-```python
+                        talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)            
                         resolution_rate = st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0)
                         aht = st.number_input("Average Handle Time (seconds)", min_value=0.0)
                         csat = st.number_input("Customer Satisfaction (%)", min_value=0.0, max_value=100.0)
