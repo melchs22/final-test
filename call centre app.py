@@ -140,13 +140,24 @@ def authenticate_user(supabase, email, password):
         user_response = supabase.table("users").select("email, password, role").eq("email", email).execute()
         if user_response.data:
             user = user_response.data[0]
-            stored_password = user["password"].encode('utf-8')
+            stored_password = user["password"]
             input_password = password.encode('utf-8')
-            if bcrypt.checkpw(input_password, stored_password):
-                return True, user["email"], user["role"]
-            else:
+            # Check if stored_password is a valid bcrypt hash
+            if not stored_password.startswith('$2b$'):
+                st.error(f"Invalid password format for user {email}. Please reset the password.")
                 return False, None, None
+            try:
+                if bcrypt.checkpw(input_password, stored_password.encode('utf-8')):
+                    return True, user["email"], user["role"]
+                else:
+                    return False, None, None
+            except ValueError as ve:
+                if "Invalid salt" in str(ve):
+                    st.error(f"Invalid password hash for user {email}. Please reset the password via Manage Users or contact an administrator.")
+                    return False, None, None
+                raise ve
         else:
+            st.error(f"No user found with email {email}.")
             return False, None, None
     except Exception as e:
         st.error(f"Authentication error: {str(e)}")
@@ -155,25 +166,17 @@ def authenticate_user(supabase, email, password):
 # Create or update user with hashed password
 def create_or_update_user(supabase, email, password, role):
     try:
-        # Validate inputs
         if not email or not password or role not in ["Manager", "Agent"]:
             return False, "Invalid email, password, or role"
-        
-        # Hash the password
         hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        
-        # Check if the user exists
         user_response = supabase.table("users").select("*").eq("email", email).execute()
-        
         if user_response.data:
-            # Update existing user
             supabase.table("users").update({
                 "password": hashed_password,
                 "role": role
             }).eq("email", email).execute()
             return True, f"Updated user {email}"
         else:
-            # Insert new user
             supabase.table("users").insert({
                 "email": email,
                 "password": hashed_password,
@@ -186,19 +189,12 @@ def create_or_update_user(supabase, email, password, role):
 # Change user password
 def change_password(supabase, email, current_password, new_password):
     try:
-        # Authenticate current password
         success, _, _ = authenticate_user(supabase, email, current_password)
         if not success:
             return False, "Current password is incorrect"
-        
-        # Validate new password (e.g., minimum length)
         if len(new_password) < 8:
             return False, "New password must be at least 8 characters long"
-        
-        # Hash new password
         hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        
-        # Update password
         supabase.table("users").update({
             "password": hashed_password
         }).eq("email", email).execute()
@@ -210,7 +206,6 @@ def change_password(supabase, email, current_password, new_password):
 def main():
     st.set_page_config(page_title="Call Center Assessment System", layout="wide")
     
-    # Initialize Supabase client
     try:
         supabase = init_supabase()
         check_db(supabase)
@@ -218,12 +213,10 @@ def main():
         st.error(f"Failed to connect to Supabase: {str(e)}")
         st.stop()
 
-    # Session state for authentication
     if 'user' not in st.session_state:
         st.session_state.user = None
         st.session_state.role = None
 
-    # Login interface
     if not st.session_state.user:
         st.title("Login")
         with st.form("login_form"):
@@ -241,7 +234,6 @@ def main():
                     st.error("Login failed. Invalid credentials or user not found.")
         return
 
-    # Sidebar with logout
     if st.sidebar.button("Logout"):
         st.session_state.user = None
         st.session_state.role = None
@@ -250,7 +242,6 @@ def main():
     st.sidebar.info(f"Logged in as: {st.session_state.user}")
     st.sidebar.info(f"Role: {st.session_state.role}")
 
-    # Change Password in Sidebar
     with st.sidebar.expander("Change Password"):
         with st.form("change_password_form"):
             current_password = st.text_input("Current Password", type="password")
@@ -267,12 +258,10 @@ def main():
                     else:
                         st.error(message)
 
-    # Manager interface
     if st.session_state.role == "Manager":
         st.title("Manager Dashboard")
         tabs = st.tabs(["Set KPIs", "Input Performance", "View Assessments", "Manage Users"])
 
-        # Set KPIs
         with tabs[0]:
             st.header("Set KPI Thresholds")
             kpis = get_kpis(supabase)
@@ -329,7 +318,6 @@ def main():
                     else:
                         st.error("Failed to save KPIs. Check your permissions.")
 
-        # Input Performance
         with tabs[1]:
             st.header("Input Agent Performance")
             try:
@@ -346,7 +334,7 @@ def main():
                         contact_success_rate = st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0)
                         onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0)
                         reporting = st.number_input("Reporting (%)", min_value=0.0, max_value=100.0)
-                        talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)            
+                        talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)
                         resolution_rate = st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0)
                         aht = st.number_input("Average Handle Time (seconds)", min_value=0.0)
                         csat = st.number_input("Customer Satisfaction (%)", min_value=0.0, max_value=100.0)
@@ -372,7 +360,6 @@ def main():
             except Exception as e:
                 st.error(f"Error loading agents: {str(e)}")
 
-        # View Assessments
         with tabs[2]:
             st.header("Assessment Results")
             performance_df = get_performance(supabase)
@@ -397,7 +384,6 @@ def main():
             else:
                 st.info("No performance data available yet. Add performance data in the 'Input Performance' tab.")
 
-        # Manage Users
         with tabs[3]:
             st.header("Manage Users")
             with st.form("user_management_form"):
@@ -420,7 +406,6 @@ def main():
                         else:
                             st.error(message)
 
-    # Agent interface
     elif st.session_state.role == "Agent":
         st.title(f"Agent Dashboard - {st.session_state.user}")
         performance_df = get_performance(supabase, st.session_state.user)
