@@ -105,7 +105,7 @@ def save_performance(supabase, agent_email, data):
     except Exception as e:
         st.error(f"Error saving performance data: {str(e)}")
         if "violates row-level security policy" in str(e):
-            st.error("You don't have permission to add performance data. Check your role superposition or RLS policies.")
+            st.error("You don't have permission to add performance data. Check your role or RLS policies.")
         return False
 
 # Get performance data with enhanced error handling and debugging
@@ -404,41 +404,64 @@ def main():
             kpis = get_kpis(supabase)
             results = assess_performance(performance_df, kpis)
             
-            # Display latest performance metrics
-            st.subheader("Your Performance Metrics")
-            latest = results.sort_values('date', ascending=False).iloc[0]
+            # Calculate average performance metrics
+            st.subheader("Your Performance Metrics (Averages)")
+            avg_metrics = results[[
+                'overall_score', 'quality_score', 'csat', 'attendance', 
+                'resolution_rate', 'contact_success_rate', 'aht', 
+                'talk_time', 'call_volume'
+            ]].mean()
             
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Overall Score", f"{latest['overall_score']:.1f}%")
-                st.metric("Quality Score", f"{latest['quality_score']}%")
-                st.metric("Customer Satisfaction", f"{latest['csat']}%")
+                st.metric("Overall Score", f"{avg_metrics['overall_score']:.1f}%")
+                st.metric("Quality Score", f"{avg_metrics['quality_score']:.1f}%")
+                st.metric("Customer Satisfaction", f"{avg_metrics['csat']:.1f}%")
             with col2:
-                st.metric("Attendance", f"{latest['attendance']}%")
-                st.metric("Resolution Rate", f"{latest['resolution_rate']}%")
-                st.metric("Contact Success", f"{latest['contact_success_rate']}%")
+                st.metric("Attendance", f"{avg_metrics['attendance']:.1f}%")
+                st.metric("Resolution Rate", f"{avg_metrics['resolution_rate']:.1f}%")
+                st.metric("Contact Success", f"{avg_metrics['contact_success_rate']:.1f}%")
             with col3:
-                st.metric("Average Handle Time", f"{latest['aht']} sec")
-                st.metric("Talk Time", f"{latest['talk_time']} sec")
-                st.metric("Call Volume", f"{latest['call_volume']} calls")
+                st.metric("Average Handle Time", f"{avg_metrics['aht']:.1f} sec")
+                st.metric("Talk Time", f"{avg_metrics['talk_time']:.1f} sec")
+                st.metric("Call Volume", f"{avg_metrics['call_volume']:.1f} calls")
             
             # Show full history
             st.subheader("Your Performance History")
             st.dataframe(results)
             
             try:
-                # Performance over time
-                st.subheader("Your Score Over Time")
-                fig = px.line(results, x='date', y='overall_score', title="Your Score Trend", 
-                            labels={'overall_score': 'Score (%)'})
+                # Performance over time (monthly)
+                st.subheader("Your Score Over Time (Monthly)")
+                # Convert date to datetime and extract year-month
+                results['date'] = pd.to_datetime(results['date'])
+                results['year_month'] = results['date'].dt.to_period('M').astype(str)
+                # Group by year_month and calculate mean
+                monthly_scores = results.groupby('year_month')['overall_score'].mean().reset_index()
+                
+                fig = px.line(
+                    monthly_scores, 
+                    x='year_month', 
+                    y='overall_score', 
+                    title="Your Monthly Score Trend",
+                    labels={'overall_score': 'Score (%)', 'year_month': 'Month'}
+                )
                 st.plotly_chart(fig)
                 
-                # Metrics by category
-                st.subheader("Performance by Category")
-                metrics_df = results[['quality_score', 'attendance', 'resolution_rate', 
-                                   'product_knowledge', 'contact_success_rate']].mean().reset_index()
+                # Metrics by category (averages)
+                st.subheader("Performance by Category (Averages)")
+                metrics_df = results[[
+                    'quality_score', 'attendance', 'resolution_rate', 
+                    'product_knowledge', 'contact_success_rate'
+                ]].mean().reset_index()
                 metrics_df.columns = ['Metric', 'Average']
-                fig2 = px.bar(metrics_df, x='Metric', y='Average', title="Your Average Metrics")
+                fig2 = px.bar(
+                    metrics_df, 
+                    x='Metric', 
+                    y='Average', 
+                    title="Your Average Metrics",
+                    labels={'Average': 'Score (%)'}
+                )
                 st.plotly_chart(fig2)
             except Exception as e:
                 st.error(f"Error plotting data: {str(e)}")
