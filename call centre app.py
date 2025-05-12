@@ -35,8 +35,9 @@ def check_db(supabase):
         st.sidebar.success("✅ Connected to database successfully")
     except Exception as e:
         st.sidebar.error(f"Database check error: {str(e)}")
-        st.sidebar.info("If tables don't exist, please run the SQL setup script in Supabase")
+        st.sidebar.info("If tables don't exist, please run the SQL setup script in Supabase. Ensure RLS policies allow access.")
 
+# Get Supabase client
 def get_db_connection():
     return init_supabase()
 
@@ -104,23 +105,27 @@ def save_performance(supabase, agent_email, data):
     except Exception as e:
         st.error(f"Error saving performance data: {str(e)}")
         if "violates row-level security policy" in str(e):
-            st.error("You don't have permission to add performance data. Check your role or RLS policies.")
+            st.error("You don't have permission to add performance data. Check your role superposition or RLS policies.")
         return False
 
-# Get performance data with error handling
+# Get performance data with enhanced error handling and debugging
 def get_performance(supabase, agent_email=None):
     try:
         if agent_email:
+            st.write(f"Fetching performance data for agent: {agent_email}")
             response = supabase.table("performance").select("*").eq("agent_email", agent_email).execute()
         else:
+            st.write("Fetching performance data for all agents")
             response = supabase.table("performance").select("*").execute()
+        
+        st.write(f"Raw response data: {response.data}")  # Debugging output
         
         if response.data:
             df = pd.DataFrame(response.data)
             # Convert numeric columns to appropriate types
             numeric_cols = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
                            'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat']
-            for col in numeric_cols:
+            for col in numericFOUNDational numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
@@ -128,11 +133,15 @@ def get_performance(supabase, agent_email=None):
             if 'call_volume' in df.columns:
                 df['call_volume'] = pd.to_numeric(df['call_volume'], errors='coerce').fillna(0).astype(int)
             
+            st.write(f"Processed DataFrame: {df.head()}")  # Debugging output
             return df
         else:
+            st.warning(f"No performance data found for {'agent ' + agent_email if agent_email else 'any agents'}.")
             return pd.DataFrame()
     except Exception as e:
         st.error(f"Error retrieving performance data: {str(e)}")
+        if "violates row-level security policy" in str(e):
+            st.error("RLS policy is preventing data access. Ensure you have a policy allowing agents to view their own performance data.")
         return pd.DataFrame()
 
 # Assess performance based on KPIs
@@ -388,6 +397,8 @@ def main():
     # Agent interface
     elif st.session_state.role == "Agent":
         st.title(f"Agent Dashboard - {st.session_state.user}")
+        st.write(f"Debug: Current user email: {st.session_state.user}")  # Debugging output
+        
         performance_df = get_performance(supabase, st.session_state.user)
         if not performance_df.empty:
             kpis = get_kpis(supabase)
@@ -434,7 +445,11 @@ def main():
                 st.write("Raw data:")
                 st.write(results)
         else:
-            st.info("No performance data available for you yet.")
+            st.info("No performance data available for you yet. Please contact your manager to ensure your performance data has been entered.")
+            st.write("Debug: Check the following:")
+            st.write(f"- Ensure performance data exists for {st.session_state.user} in the 'performance' table.")
+            st.write("- Verify RLS policies allow you to view your own data.")
+            st.write("- Confirm that the 'agent_email' in the performance table matches your email exactly.")
 
 if __name__ == "__main__":
     main()
