@@ -404,13 +404,16 @@ def main():
             kpis = get_kpis(supabase)
             results = assess_performance(performance_df, kpis)
             
-            # Calculate average performance metrics
+            # Calculate performance metrics: average for most, sum for call_volume
             st.subheader("Your Performance Metrics (Averages)")
+            # Calculate averages for most metrics
             avg_metrics = results[[
                 'overall_score', 'quality_score', 'csat', 'attendance', 
                 'resolution_rate', 'contact_success_rate', 'aht', 
-                'talk_time', 'call_volume'
+                'talk_time'
             ]].mean()
+            # Calculate sum for call_volume
+            total_call_volume = results['call_volume'].sum()
             
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -424,7 +427,7 @@ def main():
             with col3:
                 st.metric("Average Handle Time", f"{avg_metrics['aht']:.1f} sec")
                 st.metric("Talk Time", f"{avg_metrics['talk_time']:.1f} sec")
-                st.metric("Call Volume", f"{avg_metrics['call_volume']:.1f} calls")
+                st.metric("Call Volume", f"{total_call_volume:.0f} calls")
             
             # Show full history
             st.subheader("Your Performance History")
