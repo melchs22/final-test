@@ -5,55 +5,13 @@ from datetime import datetime
 import os
 from supabase import create_client, Client
 
-# Inject custom CSS to match the scorecard styling
-st.markdown(
-    """
-    <style>
-    .stDataFrame {
-        border: 2px solid #d32f2f;
-        border-radius: 5px;
-        background-color: #fff;
-    }
-    .stDataFrame thead th {
-        background-color: #d32f2f;
-        color: white;
-        font-weight: bold;
-        text-align: center;
-        padding: 10px;
-    }
-    .stDataFrame tbody tr:nth-child(odd) {
-        background-color: #f5f5f5;
-    }
-    .stDataFrame tbody tr:nth-child(even) {
-        background-color: #ffffff;
-    }
-    .stDataFrame tbody tr:last-child {
-        background-color: #ffcccc;
-        font-weight: bold;
-    }
-    .stDataFrame td {
-        padding: 8px;
-        text-align: center;
-        border: 1px solid #ddd;
-    }
-    .metric-header {
-        background-color: #ff5722;
-        color: white;
-        font-weight: bold;
-        padding: 10px;
-        text-align: center;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
 # Supabase initialization with better error handling
 def init_supabase():
     try:
         url = st.secrets["supabase"]["url"]
         key = st.secrets["supabase"]["key"]
         
+        # Make sure URL includes https:// prefix
         if not url.startswith("https://"):
             url = f"https://{url}"
             
@@ -69,6 +27,7 @@ def init_supabase():
 # Safe database check - doesn't try to create/insert data
 def check_db(supabase):
     try:
+        # Just check if tables exist by attempting to read
         user_response = supabase.table("users").select("count").limit(1).execute()
         kpi_response = supabase.table("kpis").select("count").limit(1).execute()
         perf_response = supabase.table("performance").select("count").limit(1).execute()
@@ -86,10 +45,13 @@ def get_db_connection():
 def save_kpis(supabase, kpis):
     try:
         for metric, threshold in kpis.items():
+            # Check if KPI exists
             response = supabase.table("kpis").select("*").eq("metric", metric).execute()
             if len(response.data) == 0:
+                # KPI doesn't exist, insert
                 supabase.table("kpis").insert({"metric": metric, "threshold": threshold}).execute()
             else:
+                # KPI exists, update
                 supabase.table("kpis").update({"threshold": threshold}).eq("metric", metric).execute()
         return True
     except Exception as e:
@@ -102,10 +64,13 @@ def save_kpis(supabase, kpis):
 def get_kpis(supabase):
     try:
         response = supabase.table("kpis").select("*").execute()
+        # Ensure all values are floats (except call_volume which should be int)
         kpis = {}
         for row in response.data:
             metric = row["metric"]
             value = row["threshold"]
+            
+            # Convert to appropriate type based on metric
             if metric == "call_volume":
                 kpis[metric] = int(float(value)) if value is not None else 50
             else:
@@ -140,7 +105,7 @@ def save_performance(supabase, agent_email, data):
     except Exception as e:
         st.error(f"Error saving performance data: {str(e)}")
         if "violates row-level security policy" in str(e):
-            st.error("You don't have permission to add performance data. Check your role or RLS policies.")
+            st.error("You don't have permission to add performance data. Check your role superposition or RLS policies.")
         return False
 
 # Get performance data with enhanced error handling
@@ -153,12 +118,14 @@ def get_performance(supabase, agent_email=None):
         
         if response.data:
             df = pd.DataFrame(response.data)
+            # Convert numeric columns to appropriate types
             numeric_cols = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
                            'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat']
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
+            # Convert call_volume to int
             if 'call_volume' in df.columns:
                 df['call_volume'] = pd.to_numeric(df['call_volume'], errors='coerce').fillna(0).astype(int)
             
@@ -179,7 +146,7 @@ def assess_performance(performance_df, kpis):
         
     results = performance_df.copy()
     metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
-               'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat', 'call_volume']
+               'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'csat', 'call_volume']
     
     for metric in metrics:
         if metric in results.columns:
@@ -188,6 +155,7 @@ def assess_performance(performance_df, kpis):
             else:
                 results[f'{metric}_pass'] = results[metric] >= kpis.get(metric, 50)
     
+    # Only calculate if all required columns exist
     pass_columns = [f'{m}_pass' for m in metrics if f'{m}_pass' in results.columns]
     if pass_columns:
         results['overall_score'] = results[pass_columns].mean(axis=1) * 100
@@ -197,19 +165,24 @@ def assess_performance(performance_df, kpis):
 # Improved authentication with Supabase Auth
 def authenticate_user(supabase, email, password):
     try:
+        # First try proper Supabase Auth if it's set up
         try:
             response = supabase.auth.sign_in_with_password({
                 "email": email,
                 "password": password
             })
             user = response.user
+            
+            # Get role from users table
             user_data = supabase.table("users").select("*").eq("email", email).execute()
             if user_data.data:
                 role = user_data.data[0]["role"]
             else:
-                role = "User"
+                role = "User"  # Default role
+                
             return True, email, role
         except Exception as auth_e:
+            # Fallback to simple check (for demo only - not secure)
             user_response = supabase.table("users").select("*").eq("email", email).execute()
             if user_response.data:
                 return True, email, user_response.data[0]["role"]
@@ -226,6 +199,7 @@ def main():
     # Initialize Supabase client
     try:
         supabase = init_supabase()
+        # Safe check that doesn't modify data
         check_db(supabase)
     except Exception as e:
         st.error(f"Failed to connect to Supabase: {str(e)}")
@@ -236,10 +210,11 @@ def main():
         st.session_state.user = None
         st.session_state.role = None
 
-    # Auth via Supabase Auth UI
+    # Auth via Supabase Auth UI (redirected back to this app)
     if not st.session_state.user:
         st.title("Login")
         
+        # Simple login form (you can expand this to use Supabase Auth UI)
         with st.form("login_form"):
             email = st.text_input("Email")
             password = st.text_input("Password", type="password")
@@ -255,6 +230,7 @@ def main():
                 else:
                     st.error("Login failed. Invalid credentials or user not found.")
         
+        # Note about Supabase Auth
         st.info("Note: For production, you should use Supabase Authentication which provides secure user management.")
         return
 
@@ -264,6 +240,7 @@ def main():
         st.session_state.role = None
         st.rerun()
     
+    # Display current user info
     st.sidebar.info(f"Logged in as: {st.session_state.user}")
     st.sidebar.info(f"Role: {st.session_state.role}")
 
@@ -272,22 +249,54 @@ def main():
         st.title("Manager Dashboard")
         tabs = st.tabs(["Set KPIs", "Input Performance", "View Assessments"])
 
+        # Set KPIs
         with tabs[0]:
             st.header("Set KPI Thresholds")
             kpis = get_kpis(supabase)
             
             with st.form("kpi_form"):
-                attendance = st.number_input("Attendance (%, min)", value=float(kpis.get('attendance', 95.0)), min_value=0.0, max_value=100.0)
-                quality_score = st.number_input("Quality Score (%, min)", value=float(kpis.get('quality_score', 90.0)), min_value=0.0, max_value=100.0)
-                product_knowledge = st.number_input("Product Knowledge (%, min)", value=float(kpis.get('product_knowledge', 85.0)), min_value=0.0, max_value=100.0)
-                contact_success_rate = st.number_input("Contact Success Rate (%, min)", value=float(kpis.get('contact_success_rate', 80.0)), min_value=0.0, max_value=100.0)
-                onboarding = st.number_input("Onboarding (%, min)", value=float(kpis.get('onboarding', 90.0)), min_value=0.0, max_value=100.0)
-                reporting = st.number_input("Reporting (%, min)", value=float(kpis.get('reporting', 95.0)), min_value=0.0, max_value=100.0)
-                talk_time = st.number_input("CRM Talk Time (seconds, min)", value=float(kpis.get('talk_time', 300.0)), min_value=0.0)
-                resolution_rate = st.number_input("Issue Resolution Rate (%, min)", value=float(kpis.get('resolution_rate', 80.0)), min_value=0.0, max_value=100.0)
-                aht = st.number_input("Average Handle Time (seconds, max)", value=float(kpis.get('aht', 600.0)), min_value=0.0)
-                csat = st.number_input("Customer Satisfaction (%, min)", value=float(kpis.get('csat', 85.0)), min_value=0.0, max_value=100.0)
-                call_volume = st.number_input("Call Volume (calls, min)", value=int(kpis.get('call_volume', 50)), min_value=0)
+                # Ensure all values are the correct type for number_input
+                attendance = st.number_input("Attendance (%, min)", 
+                                            value=float(kpis.get('attendance', 95.0)), 
+                                            min_value=0.0, 
+                                            max_value=100.0)
+                quality_score = st.number_input("Quality Score (%, min)", 
+                                              value=float(kpis.get('quality_score', 90.0)), 
+                                              min_value=0.0, 
+                                              max_value=100.0)
+                product_knowledge = st.number_input("Product Knowledge (%, min)", 
+                                                 value=float(kpis.get('product_knowledge', 85.0)), 
+                                                 min_value=0.0, 
+                                                 max_value=100.0)
+                contact_success_rate = st.number_input("Contact Success Rate (%, min)", 
+                                                    value=float(kpis.get('contact_success_rate', 80.0)), 
+                                                    min_value=0.0, 
+                                                    max_value=100.0)
+                onboarding = st.number_input("Onboarding (%, min)", 
+                                          value=float(kpis.get('onboarding', 90.0)), 
+                                          min_value=0.0, 
+                                          max_value=100.0)
+                reporting = st.number_input("Reporting (%, min)", 
+                                         value=float(kpis.get('reporting', 95.0)), 
+                                         min_value=0.0, 
+                                         max_value=100.0)
+                talk_time = st.number_input("CRM Talk Time (seconds, min)", 
+                                         value=float(kpis.get('talk_time', 300.0)), 
+                                         min_value=0.0)
+                resolution_rate = st.number_input("Issue Resolution Rate (%, min)", 
+                                               value=float(kpis.get('resolution_rate', 80.0)), 
+                                               min_value=0.0, 
+                                               max_value=100.0)
+                aht = st.number_input("Average Handle Time (seconds, max)", 
+                                   value=float(kpis.get('aht', 600.0)), 
+                                   min_value=0.0)
+                csat = st.number_input("Customer Satisfaction (%, min)", 
+                                    value=float(kpis.get('csat', 85.0)), 
+                                    min_value=0.0, 
+                                    max_value=100.0)
+                call_volume = st.number_input("Call Volume (calls, min)", 
+                                           value=int(kpis.get('call_volume', 50)), 
+                                           min_value=0)
                 
                 if st.form_submit_button("Save KPIs"):
                     new_kpis = {
@@ -308,9 +317,11 @@ def main():
                     else:
                         st.error("Failed to save KPIs. Check your permissions.")
 
+        # Input Performance
         with tabs[1]:
             st.header("Input Agent Performance")
             try:
+                # Get agents
                 response = supabase.table("users").select("*").eq("role", "Agent").execute()
                 agents = [user["email"] for user in response.data]
                 
@@ -351,14 +362,96 @@ def main():
             except Exception as e:
                 st.error(f"Error loading agents: {str(e)}")
 
+        # View Assessments
         with tabs[2]:
-            st.header("Assessment Results")
+            st.header("Call Center Agent Quality Scorecard")
             performance_df = get_performance(supabase)
             if not performance_df.empty:
                 kpis = get_kpis(supabase)
                 results = assess_performance(performance_df, kpis)
-                st.dataframe(results)
-                
+
+                # Map metrics to scorecard terms
+                metric_map = {
+                    'talk_time': 'Time to Answer',
+                    'contact_success_rate': 'Abandon Rate (%)',
+                    'resolution_rate': 'FCR'
+                }
+
+                # Section 01: Individual Agent Performance
+                st.subheader("01. Individual Agent Performance (Jan)")
+                col1, col2, col3, col4 = st.columns(4)
+                agents = results['agent_email'].unique()
+                with col1:
+                    st.image("https://via.placeholder.com/50", caption="Agent 1")
+                with col2:
+                    st.image("https://via.placeholder.com/50", caption="Agent 2")
+                with col3:
+                    st.image("https://via.placeholder.com/50", caption="Agent 3")
+                with col4:
+                    st.image("https://via.placeholder.com/50", caption="Agent 4")
+
+                # Latest data for each agent
+                latest_data = results.groupby('agent_email').apply(lambda x: x.sort_values('date').iloc[-1])
+                for metric, display_name in metric_map.items():
+                    col1.metric(display_name, f"{latest_data.loc[agents[0]][metric]:.0f}" if len(agents) > 0 else "N/A")
+                    col2.metric(display_name, f"{latest_data.loc[agents[1]][metric]:.0f}" if len(agents) > 1 else "N/A")
+                    col3.metric(display_name, f"{latest_data.loc[agents[2]][metric]:.0f}" if len(agents) > 2 else "N/A")
+                    col4.metric(display_name, f"{latest_data.loc[agents[3]][metric]:.0f}" if len(agents) > 3 else "N/A")
+
+                # Section 02: Setup Targets
+                st.subheader("02. Setup")
+                col1, col2 = st.columns(2)
+                with col1:
+                    for metric, display_name in metric_map.items():
+                        target = kpis.get(metric, 0)
+                        st.metric(display_name, f"{target:.0f}")
+                with col2:
+                    for metric, display_name in metric_map.items():
+                        target = kpis.get(metric, 0) * 1.25  # Example adjustment
+                        st.metric(display_name, f"{target:.0f}")
+
+                # Section 03: Branch Performance
+                st.subheader("03. Branch Performance - KPI between W9 to W20")
+                # Simulate weekly data (simplified, adjust based on actual data)
+                weekly_data = results.groupby(results['date'].dt.isocalendar().week)['overall_score'].mean().reset_index()
+                weekly_data = weekly_data.sort_values('week')
+                fig = px.bar(weekly_data, x='week', y='overall_score', title="Branch Performance (W9-W20)",
+                            labels={'week': 'Week', 'overall_score': 'Score (%)'})
+                st.plotly_chart(fig)
+
+                # Section 04: Individual Variance
+                st.subheader("04. Individual Variance")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.write("Agent 1")
+                    for metric, display_name in metric_map.items():
+                        value = latest_data.loc[agents[0]][metric] if len(agents) > 0 else 0
+                        target = kpis.get(metric, 0)
+                        variance = ((value - target) / target * 100) if target != 0 else 0
+                        st.metric(display_name, f"{variance:.1f}%")
+                with col2:
+                    st.write("Agent 2")
+                    for metric, display_name in metric_map.items():
+                        value = latest_data.loc[agents[1]][metric] if len(agents) > 1 else 0
+                        target = kpis.get(metric, 0)
+                        variance = ((value - target) / target * 100) if target != 0 else 0
+                        st.metric(display_name, f"{variance:.1f}%")
+                with col3:
+                    st.write("Agent 3")
+                    for metric, display_name in metric_map.items():
+                        value = latest_data.loc[agents[2]][metric] if len(agents) > 2 else 0
+                        target = kpis.get(metric, 0)
+                        variance = ((value - target) / target * 100) if target != 0 else 0
+                        st.metric(display_name, f"{variance:.1f}%")
+                with col4:
+                    st.write("Agent 4")
+                    for metric, display_name in metric_map.items():
+                        value = latest_data.loc[agents[3]][metric] if len(agents) > 3 else 0
+                        target = kpis.get(metric, 0)
+                        variance = ((value - target) / target * 100) if target != 0 else 0
+                        st.metric(display_name, f"{variance:.1f}%")
+
+                # Retain download functionality
                 csv = results.to_csv(index=False)
                 st.download_button(
                     label="Download All Agent Performance as CSV",
@@ -366,22 +459,6 @@ def main():
                     file_name=f"agent_performance_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv"
                 )
-                
-                st.subheader("Performance Overview")
-                try:
-                    fig = px.bar(results, x='agent_email', y='overall_score', color='agent_email', 
-                                title="Agent Overall Scores", labels={'overall_score': 'Score (%)'})
-                    st.plotly_chart(fig)
-                    
-                    if 'date' in results.columns:
-                        st.subheader("Performance Trends")
-                        dates = sorted(results['date'].unique())
-                        if len(dates) > 1:
-                            fig2 = px.line(results, x='date', y='overall_score', color='agent_email',
-                                          title="Score Trends Over Time", labels={'overall_score': 'Score (%)'})
-                            st.plotly_chart(fig2)
-                except Exception as e:
-                    st.error(f"Error plotting data: {str(e)}")
             else:
                 st.info("No performance data available yet. Add performance data in the 'Input Performance' tab.")
 
@@ -392,7 +469,7 @@ def main():
         # Get individual agent performance
         performance_df = get_performance(supabase, st.session_state.user)
         # Get all agents' performance for comparison
-        all_performance_df = get_performance(supabase)
+        all_performance_df = get_performance(supabase)  # Fetch all agents' data
         
         if not performance_df.empty:
             kpis = get_kpis(supabase)
@@ -404,14 +481,12 @@ def main():
                 'overall_score': 'mean',
                 'quality_score': 'mean',
                 'attendance': 'mean',
+                'resolution_rate': 'mean',
                 'product_knowledge': 'mean',
                 'contact_success_rate': 'mean',
-                'onboarding': 'mean',
-                'reporting': 'mean',
-                'talk_time': 'mean',
-                'resolution_rate': 'mean',
                 'aht': 'mean',
                 'csat': 'mean',
+                'talk_time': 'mean',
                 'call_volume': 'mean'
             }).reset_index()
             monthly_results['date'] = monthly_results['date'].dt.to_timestamp()
@@ -425,157 +500,23 @@ def main():
                 all_monthly_results['date'] = all_monthly_results['date'].dt.to_timestamp()
                 all_monthly_results['agent_email'] = 'All Agents (Average)'
             
-            # Display latest performance metrics in the new table format
+            # Display latest performance metrics
             st.subheader("Your Performance Metrics")
             latest = results.sort_values('date', ascending=False).iloc[0]
             
-            # Define the metrics and their properties for the table
-            metrics_data = [
-                {
-                    "Key Performance Indicator": "Attendance",
-                    "Weighting": "10%",
-                    "Best Case": 100,
-                    "Worst Case": 0,
-                    "Actual Performance": f"{latest['attendance']}%",
-                    "Metric Score": latest['attendance'],
-                    "Balanced Score": latest['attendance'] * 0.10
-                },
-                {
-                    "Key Performance Indicator": "Quality Score",
-                    "Weighting": "15%",
-                    "Best Case": 100,
-                    "Worst Case": 0,
-                    "Actual Performance": f"{latest['quality_score']}%",
-                    "Metric Score": latest['quality_score'],
-                    "Balanced Score": latest['quality_score'] * 0.15
-                },
-                {
-                    "Key Performance Indicator": "Product Knowledge",
-                    "Weighting": "10%",
-                    "Best Case": 100,
-                    "Worst Case": 0,
-                    "Actual Performance": f"{latest['product_knowledge']}%",
-                    "Metric Score": latest['product_knowledge'],
-                    "Balanced Score": latest['product_knowledge'] * 0.10
-                },
-                {
-                    "Key Performance Indicator": "Contact Success Rate",
-                    "Weighting": "10%",
-                    "Best Case": 100,
-                    "Worst Case": 0,
-                    "Actual Performance": f"{latest['contact_success_rate']}%",
-                    "Metric Score": latest['contact_success_rate'],
-                    "Balanced Score": latest['contact_success_rate'] * 0.10
-                },
-                {
-                    "Key Performance Indicator": "Onboarding",
-                    "Weighting": "5%",
-                    "Best Case": 100,
-                    "Worst Case": 0,
-                    "Actual Performance": f"{latest['onboarding']}%",
-                    "Metric Score": latest['onboarding'],
-                    "Balanced Score": latest['onboarding'] * 0.05
-                },
-                {
-                    "Key Performance Indicator": "Reporting",
-                    "Weighting": "5%",
-                    "Best Case": 100,
-                    "Worst Case": 0,
-                    "Actual Performance": f"{latest['reporting']}%",
-                    "Metric Score": latest['reporting'],
-                    "Balanced Score": latest['reporting'] * 0.05
-                },
-                {
-                    "Key Performance Indicator": "Talk Time",
-                    "Weighting": "10%",
-                    "Best Case": 200,
-                    "Worst Case": 600,
-                    "Actual Performance": f"{latest['talk_time']} sec",
-                    "Metric Score": max(0, min(100, ((600 - latest['talk_time']) / (600 - 200)) * 100)),
-                    "Balanced Score": max(0, min(100, ((600 - latest['talk_time']) / (600 - 200)) * 100)) * 0.10
-                },
-                {
-                    "Key Performance Indicator": "Resolution Rate",
-                    "Weighting": "10%",
-                    "Best Case": 100,
-                    "Worst Case": 0,
-                    "Actual Performance": f"{latest['resolution_rate']}%",
-                    "Metric Score": latest['resolution_rate'],
-                    "Balanced Score": latest['resolution_rate'] * 0.10
-                },
-                {
-                    "Key Performance Indicator": "Average Handle Time (AHT)",
-                    "Weighting": "10%",
-                    "Best Case": 300,
-                    "Worst Case": 1200,
-                    "Actual Performance": f"{latest['aht']} sec",
-                    "Metric Score": max(0, min(100, ((1200 - latest['aht']) / (1200 - 300)) * 100)),
-                    "Balanced Score": max(0, min(100, ((1200 - latest['aht']) / (1200 - 300)) * 100)) * 0.10
-                },
-                {
-                    "Key Performance Indicator": "Customer Satisfaction (CSAT)",
-                    "Weighting": "10%",
-                    "Best Case": 100,
-                    "Worst Case": 0,
-                    "Actual Performance": f"{latest['csat']}%",
-                    "Metric Score": latest['csat'],
-                    "Balanced Score": latest['csat'] * 0.10
-                },
-                {
-                    "Key Performance Indicator": "Call Volume",
-                    "Weighting": "5%",
-                    "Best Case": 100,
-                    "Worst Case": 0,
-                    "Actual Performance": f"{latest['call_volume']} calls",
-                    "Metric Score": min(100, (latest['call_volume'] / 100) * 100),
-                    "Balanced Score": min(100, (latest['call_volume'] / 100) * 100) * 0.05
-                }
-            ]
-            
-            # Create a DataFrame for the table
-            metrics_df = pd.DataFrame(metrics_data)
-            
-            # Calculate the total balanced score
-            total_balanced_score = metrics_df["Balanced Score"].sum()
-            
-            # Add a total row
-            total_row = pd.DataFrame([{
-                "Key Performance Indicator": "TOTAL",
-                "Weighting": "100%",
-                "Best Case": "",
-                "Worst Case": "",
-                "Actual Performance": "",
-                "Metric Score": "",
-                "Balanced Score": f"{total_balanced_score:.1f}%"
-            }])
-            
-            # Concatenate the total row to the DataFrame
-            metrics_df = pd.concat([metrics_df, total_row], ignore_index=True)
-            
-            # Format the columns for display
-            metrics_df["Performance Range"] = metrics_df.apply(
-                lambda row: f"{row['Best Case']} - {row['Worst Case']}" if row['Best Case'] != "" else "", axis=1
-            )
-            metrics_df["Metric Score"] = metrics_df["Metric Score"].apply(
-                lambda x: f"{x:.1f}%" if isinstance(x, (int, float)) else x
-            )
-            metrics_df["Balanced Score"] = metrics_df["Balanced Score"].apply(
-                lambda x: f"{x:.1f}%" if isinstance(x, (int, float)) else x
-            )
-            
-            # Reorder and select columns to match the image format
-            display_df = metrics_df[[
-                "Key Performance Indicator",
-                "Weighting",
-                "Performance Range",
-                "Actual Performance",
-                "Metric Score",
-                "Balanced Score"
-            ]]
-            
-            # Display the table
-            st.subheader("Performance Scorecard")
-            st.dataframe(display_df, use_container_width=True)
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Overall Score", f"{latest['overall_score']:.1f}%")
+                st.metric("Quality Score", f"{latest['quality_score']}%")
+                st.metric("Customer Satisfaction", f"{latest['csat']}%")
+            with col2:
+                st.metric("Attendance", f"{latest['attendance']}%")
+                st.metric("Resolution Rate", f"{latest['resolution_rate']}%")
+                st.metric("Contact Success", f"{latest['contact_success_rate']}%")
+            with col3:
+                st.metric("Average Handle Time", f"{latest['aht']} sec")
+                st.metric("Talk Time", f"{latest['talk_time']} sec")
+                st.metric("Call Volume", f"{latest['call_volume']} calls")
             
             # Show full history
             st.subheader("Your Performance History")
@@ -585,6 +526,7 @@ def main():
                 # Monthly Performance over time with comparison to all agents
                 st.subheader("Your Monthly Score Over Time vs All Agents")
                 if not all_performance_df.empty:
+                    # Combine individual and all agents' data for plotting
                     combined_results = pd.concat([
                         monthly_results[['date', 'overall_score', 'agent_email']],
                         all_monthly_results[['date', 'overall_score', 'agent_email']]
@@ -596,9 +538,10 @@ def main():
                         color='agent_email',
                         title="Your Monthly Score vs All Agents Average",
                         labels={'overall_score': 'Score (%)', 'date': 'Month'},
-                        line_dash_map={'All Agents (Average)': 'dash'}
+                        line_dash_map={'All Agents (Average)': 'dash'}  # Dashed line for all agents
                     )
                 else:
+                    # Fallback to only individual agent if no other data
                     fig = px.line(
                         monthly_results,
                         x='date',
@@ -635,7 +578,7 @@ def main():
                         st.info("Not enough data for latest month comparison.")
                 else:
                     st.info("No data available for comparison with other agents.")
-                
+                    
             except Exception as e:
                 st.error(f"Error plotting data: {str(e)}")
                 st.write("Raw data:")
