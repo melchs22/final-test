@@ -453,20 +453,31 @@ def main():
                 st.plotly_chart(fig3)
                 
                 st.subheader("🎯 Your Goals")
+                all_metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
+                              'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat',
+                              'call_volume', 'overall_score']
                 response = supabase.table("goals").select("*").eq("agent_name", st.session_state.user).execute()
                 goals_df = pd.DataFrame(response.data)
                 if not goals_df.empty:
-                    for _, row in goals_df.iterrows():
-                        current_value = results[results['date'] == max(results['date'])][row['metric']].mean() if row['metric'] in results.columns else 0.0
-                        progress = min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
-                        st.progress(int(progress))
-                        st.write(f"{row['metric'].replace('_', ' ').title()}: Target {row['target_value']:.1f}%, Current {current_value:.1f}%, Status: {row['status']}")
-                        if st.button(f"Update {row['metric']} Goal", key=row['id']):
-                            new_target = st.number_input(f"New Target for {row['metric']}", value=float(row['target_value']))
-                            supabase.table("goals").update({"target_value": new_target}).eq("id", row['id']).execute()
-                            st.success("Goal updated! (Pending manager approval)")
+                    for metric in all_metrics:
+                        goal_row = goals_df[goals_df['metric'] == metric]
+                        if not goal_row.empty:
+                            row = goal_row.iloc[0]
+                            current_value = results[results['date'] == max(results['date'])][metric].mean() if metric in results.columns else 0.0
+                            if metric == 'aht':
+                                progress = min((kpis.get(metric, 600) - current_value) / (kpis.get(metric, 600) - row['target_value']) * 100, 100) if kpis.get(metric, 600) > row['target_value'] else 0
+                            else:
+                                progress = min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
+                            st.progress(int(progress))
+                            st.write(f"{metric.replace('_', ' ').title()}: Target {row['target_value']:.1f}{' sec' if metric == 'aht' else '%'}, Current {current_value:.1f}{' sec' if metric == 'aht' else '%'}, Status: {row['status']}")
+                            if st.button(f"Update {metric} Goal", key=f"update_{metric}"):
+                                new_target = st.number_input(f"New Target for {metric}", value=float(row['target_value']))
+                                supabase.table("goals").update({"target_value": new_target}).eq("id", row['id']).execute()
+                                st.success("Goal updated! (Pending manager approval)")
+                        else:
+                            st.write(f"No goal set for {metric.replace('_', ' ').title()}. Contact your manager to set it.")
                 else:
-                    st.info("No goals set yet. Contact your manager to set goals.")
+                    st.info("No goals set yet. Contact your manager to set goals for all metrics.")
                 
                 st.subheader("💬 Submit Feedback")
                 with st.form("feedback_form"):
