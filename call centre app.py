@@ -78,7 +78,7 @@ def save_performance(supabase, agent_name, data):
     try:
         date = datetime.now().strftime("%Y-%m-%d")
         performance_data = {
-            "agent_name": agent_name,  # Changed from agent_email
+            "agent_name": agent_name,
             "attendance": data['attendance'],
             "quality_score": data['quality_score'],
             "product_knowledge": data['product_knowledge'],
@@ -101,17 +101,13 @@ def save_performance(supabase, agent_name, data):
             st.error("You don't have permission to add performance data. Check your role or RLS policies.")
         return False
 
-# Get performance data with enhanced error handling and debugging
+# Get performance data with enhanced error handling (removed debug outputs)
 def get_performance(supabase, agent_name=None):
     try:
         if agent_name:
-            st.write(f"Fetching performance data for agent: {agent_name}")
             response = supabase.table("performance").select("*").eq("agent_name", agent_name).execute()
         else:
-            st.write("Fetching performance data for all agents")
             response = supabase.table("performance").select("*").execute()
-        
-        st.write(f"Raw response data: {response.data}")
         
         if response.data:
             df = pd.DataFrame(response.data)
@@ -124,7 +120,6 @@ def get_performance(supabase, agent_name=None):
             if 'call_volume' in df.columns:
                 df['call_volume'] = pd.to_numeric(df['call_volume'], errors='coerce').fillna(0).astype(int)
             
-            st.write(f"Processed DataFrame: {df.head()}")
             return df
         else:
             st.warning(f"No performance data found for {'agent ' + agent_name if agent_name else 'any agents'}.")
@@ -160,7 +155,6 @@ def assess_performance(performance_df, kpis):
 # Improved authentication with Supabase Auth
 def authenticate_user(supabase, name, password):
     try:
-        # Fallback to simple check (for demo only - not secure)
         user_response = supabase.table("users").select("*").eq("name", name).execute()
         if user_response.data:
             return True, name, user_response.data[0]["role"]
@@ -191,9 +185,8 @@ def main():
     if not st.session_state.user:
         st.title("Login")
         
-        # Simple login form
         with st.form("login_form"):
-            name = st.text_input("Name")  # Changed from Email to Name
+            name = st.text_input("Name")
             password = st.text_input("Password", type="password")
             submit = st.form_submit_button("Login")
             
@@ -216,7 +209,6 @@ def main():
         st.session_state.role = None
         st.rerun()
     
-    # Display current user info
     st.sidebar.info(f"Logged in as: {st.session_state.user}")
     st.sidebar.info(f"Role: {st.session_state.role}")
 
@@ -297,7 +289,7 @@ def main():
             st.header("Input Agent Performance")
             try:
                 response = supabase.table("users").select("*").eq("role", "Agent").execute()
-                agents = [user["name"] for user in response.data]  # Changed from email to name
+                agents = [user["name"] for user in response.data]
                 
                 if not agents:
                     st.warning("No agents found in the system. Please add agents in the Supabase dashboard.")
