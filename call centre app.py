@@ -212,7 +212,7 @@ def main():
     with st.sidebar.expander("ℹ️ Help & Instructions"):
         st.write("""
         - **Login**: Use your name and password to log in.
-        - **Managers**: Set KPIs, input performance data, and view assessments.
+        - **Managers**: Set KPIs, input performance data, view assessments, and manage agent goals.
         - **Agents**: View your performance metrics, history, goals, and submit feedback.
         - **Date Filter**: Use the date pickers to filter data.
         - **Trends**: Add performance data with multiple dates to see trends.
@@ -238,7 +238,7 @@ def main():
                 st.metric("Total Call Volume", f"{total_call_volume}")
             with col3:
                 st.metric("Agent Count", len(results['agent_name'].unique()))
-        tabs = st.tabs(["Set KPIs", "Input Performance", "View Assessments"])
+        tabs = st.tabs(["Set KPIs", "Input Performance", "View Assessments", "View Agent Goals"])
 
         with tabs[0]:
             st.header("📋 Set KPI Thresholds")
@@ -357,6 +357,81 @@ def main():
                             st.info("Performance trends require data from multiple dates. Please add more performance records with different dates.")
                 except Exception as e:
                     st.error(f"Error plotting data: {str(e)}")
+
+        with tabs[3]:
+            st.header("🎯 View Agent Goals")
+            col1, col2 = st.columns(2)
+            with col1:
+                start_date = st.date_input("Start Date", value=pd.to_datetime('2025-05-01'), key="goals_start")
+            with col2:
+                end_date = st.date_input("End Date", value=datetime.now().date(), key="goals_end")
+            
+            try:
+                # Fetch all agents with role 'Agent'
+                agents_response = supabase.table("users").select("name").eq("role", "Agent").execute()
+                agents = [agent["name"] for agent in agents_response.data]
+                
+                if not agents:
+                    st.warning("No agents found in the system.")
+                else:
+                    # Fetch all goals and performance data
+                    goals_response = supabase.table("goals").select("*").in_("agent_name", agents).execute()
+                    goals_df = pd.DataFrame(goals_response.data)
+                    
+                    performance_df = get_performance(supabase)
+                    performance_df['date'] = pd.to_datetime(performance_df['date'])
+                    masked_performance_df = performance_df[(performance_df['date'] >= pd.to_datetime(start_date)) & 
+                                                          (performance_df['date'] <= pd.to_datetime(end_date))]
+                    kpis = get_kpis(supabase)
+                    performance_results = assess_performance(masked_performance_df, kpis)
+                    
+                    if not goals_df.empty:
+                        all_metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
+                                      'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat',
+                                      'call_volume', 'overall_score']
+                        goal_data = []
+                        
+                        for agent in agents:
+                            agent_goals = goals_df[goals_df['agent_name'] == agent]
+                            agent_performance = performance_results[performance_results['agent_name'] == agent]
+                            
+                            if not agent_goals.empty:
+                                for metric in all_metrics:
+                                    goal_row = agent_goals[agent_goals['metric'] == metric]
+                                    if not goal_row.empty:
+                                        row = goal_row.iloc[0]
+                                        target_value = row['target_value']
+                                        current_value = agent_performance[metric].mean() if metric in agent_performance.columns and not agent_performance[metric].isna().all() else 0.0
+                                        if metric == 'aht':
+                                            progress = min((kpis.get(metric, 600) - current_value) / (kpis.get(metric, 600) - target_value) * 100, 100) if kpis.get(metric, 600) > target_value else 0
+                                        else:
+                                            progress = min(current_value / target_value * 100, 100) if target_value > 0 else 0
+                                        goal_data.append({
+                                            "Agent Name": agent,
+                                            "Metric": metric.replace('_', ' ').title(),
+                                            "Target Value": f"{target_value:.1f}{' sec' if metric == 'aht' else ''}",
+                                            "Current Value": f"{current_value:.1f}{' sec' if metric == 'aht' else ''}",
+                                            "Progress (%)": f"{progress:.1f}%",
+                                            "Status": row['status']
+                                        })
+                            else:
+                                st.info(f"No goals set for {agent}.")
+                        
+                        if goal_data:
+                            goals_display_df = pd.DataFrame(goal_data)
+                            st.dataframe(goals_display_df)
+                            st.download_button(
+                                label="📥 Download Goals as CSV",
+                                data=goals_display_df.to_csv(index=False),
+                                file_name="agent_goals.csv",
+                                mime="text/csv"
+                            )
+                        else:
+                            st.info("No goals data available for the selected agents and date range.")
+                    else:
+                        st.info("No goals set for any agents yet.")
+            except Exception as e:
+                st.error(f"Error loading goals data: {str(e)}")
 
     elif st.session_state.role == "Agent":
         st.title(f"👤 Agent Dashboard - {st.session_state.user}")
