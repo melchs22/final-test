@@ -120,29 +120,41 @@ def get_performance(supabase, agent_name=None):
 
 def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=None):
     try:
-        query = supabase.table("zoho_agent_data").select("*")
+        # Select all rows, up to 15,000 (Supabase default max is 1,000 unless overridden)
+        query = supabase.table("zoho_agent_data").select("*").range(0, 14999)
+
+        # Filter by agent if provided
         if agent_name:
             query = query.eq("ticket_owner", agent_name)
+
         response = query.execute()
-        
+
+        # 🔍 Debugging output: log how many rows were returned
+        st.write(f"✅ Supabase returned {len(response.data)} rows for agent: {agent_name or 'All'}")
+
         if response.data:
             df = pd.DataFrame(response.data)
+
+            # Safety checks for expected columns
             if 'id' not in df.columns:
-                st.error("The 'zoho_agent_data' table is missing an 'id' column, which is required for unique ticket counting.")
+                st.error("❌ The 'zoho_agent_data' table is missing an 'id' column, required for unique ticket counting.")
                 return pd.DataFrame()
             if 'ticket_owner' not in df.columns:
-                st.error("The 'zoho_agent_data' table is missing a 'ticket_owner' column.")
+                st.error("❌ The 'zoho_agent_data' table is missing a 'ticket_owner' column.")
                 return pd.DataFrame()
+
             return df
         else:
-            st.warning(f"No Zoho agent data found for agent '{agent_name}'.")
+            st.warning(f"⚠️ No Zoho agent data found for agent '{agent_name}'.")
             st.write("Debug: No rows returned from Supabase query.")
             return pd.DataFrame()
+
     except Exception as e:
-        st.error(f"Error retrieving Zoho agent data: {str(e)}")
+        st.error(f"❌ Error retrieving Zoho agent data: {str(e)}")
         if "violates row-level security policy" in str(e):
-            st.error("RLS policy is preventing data access. Ensure you have a policy allowing agents to view their own Zoho data.")
+            st.error("🔒 RLS policy is blocking data access. Ensure agents are allowed to view their own data.")
         return pd.DataFrame()
+
 
 def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
     try:
