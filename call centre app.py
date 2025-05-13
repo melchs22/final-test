@@ -25,6 +25,7 @@ def check_db(supabase):
         user_response = supabase.table("users").select("count").limit(1).execute()
         kpi_response = supabase.table("kpis").select("count").limit(1).execute()
         perf_response = supabase.table("performance").select("count").limit(1).execute()
+        zoho_response = supabase.table("zoho_agent_data").select("count").limit(1).execute()
         st.sidebar.success("✅ Connected to database successfully")
     except Exception as e:
         st.sidebar.error(f"Database check error: {str(e)}")
@@ -113,6 +114,31 @@ def get_performance(supabase, agent_name=None):
         st.error(f"Error retrieving performance data: {str(e)}")
         if "violates row-level security policy" in str(e):
             st.error("RLS policy is preventing data access. Ensure you have a policy allowing agents to view their own performance data.")
+        return pd.DataFrame()
+
+def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=None):
+    try:
+        query = supabase.table("zoho_agent_data").select("*")
+        if agent_name:
+            query = query.eq("ticket_owner", agent_name)
+        if start_date and end_date:
+            # Assuming 'date' column exists; remove these lines if no 'date' column
+            query = query.gte("date", start_date.strftime("%Y-%m-%d")).lte("date", end_date.strftime("%Y-%m-%d"))
+        response = query.execute()
+        
+        if response.data:
+            df = pd.DataFrame(response.data)
+            # Convert date to datetime if present
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+            return df
+        else:
+            st.warning(f"No Zoho agent data found for {'agent ' + agent_name if agent_name else 'any agents'}.")
+            return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error retrieving Zoho agent data: {str(e)}")
+        if "violates row-level security policy" in str(e):
+            st.error("RLS policy is preventing data access. Ensure you have a policy allowing agents to view their own Zoho data.")
         return pd.DataFrame()
 
 def assess_performance(performance_df, kpis):
@@ -213,7 +239,7 @@ def main():
         st.write("""
         - **Login**: Use your name and password to log in.
         - **Managers**: Set KPIs, input performance data, view assessments, and manage agent goals.
-        - **Agents**: View your performance metrics, history, goals, and submit feedback.
+        - **Agents**: View your performance metrics, history, goals, Zoho ticket data, and submit feedback.
         - **Date Filter**: Use the date pickers to filter data.
         - **Trends**: Add performance data with multiple dates to see trends.
         """)
@@ -288,7 +314,7 @@ def main():
                         quality_score = st.number_input("Quality Score (%)", min_value=0.0, max_value=100.0)
                         product_knowledge = st.number_input("Product Knowledge (%)", min_value=0.0, max_value=100.0)
                         contact_success_rate = st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0)
-                        onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0)
+                        onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100 filetype=python
                         reporting = st.number_input("Reporting (%)", min_value=0.0, max_value=100.0)
                         talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)
                         resolution_rate = st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0)
@@ -367,16 +393,14 @@ def main():
                 end_date = st.date_input("End Date", value=datetime.now().date(), key="goals_end")
             
             try:
-                # Fetch all agents with role 'Agent'
                 agents_response = supabase.table("users").select("name").eq("role", "Agent").execute()
                 agents = [agent["name"] for agent in agents_response.data]
                 
                 if not agents:
                     st.warning("No agents found in the system.")
                 else:
-                    # Fetch all goals and performance data
                     goals_response = supabase.table("goals").select("*").in_("agent_name", agents).execute()
-                    goals_df = pd.DataFrame(goals_response.data)
+                    goals_df = pd.DataFrame(goods_response.data)
                     
                     performance_df = get_performance(supabase)
                     performance_df['date'] = pd.to_datetime(performance_df['date'])
@@ -449,13 +473,15 @@ def main():
         
         performance_df = get_performance(supabase, st.session_state.user)
         all_performance_df = get_performance(supabase)
+        zoho_df = get_zoho_agent_data(supabase, st.session_state.user, start_date, end_date)
+        
         if not performance_df.empty and not all_performance_df.empty:
             performance_df['date'] = pd.to_datetime(performance_df['date'])
             all_performance_df['date'] = pd.to_datetime(all_performance_df['date'])
             masked_df = performance_df[(performance_df['date'] >= pd.to_datetime(start_date)) & 
                                      (performance_df['date'] <= pd.to_datetime(end_date))]
             all_masked_df = all_performance_df[(all_performance_df['date'] >= pd.to_datetime(start_date)) & 
-                                            (all_performance_df['date'] <= pd.to_datetime(end_date))]
+                                              (all_performance_df['date'] <= pd.to_datetime(end_date))]
             kpis = get_kpis(supabase)
             results = assess_performance(masked_df, kpis)
             all_results = assess_performance(all_masked_df, kpis)
@@ -485,6 +511,48 @@ def main():
                 st.metric("Average Handle Time", f"{avg_metrics['aht']:.1f} sec")
                 st.metric("Talk Time", f"{avg_metrics['talk_time']:.1f} sec")
                 st.metric("Call Volume", f"{total_call_volume:.0f} calls")
+            
+            st.subheader("📊 Your Zoho Agent Data Summary")
+            if not zoho_df.empty:
+                total_tickets = len(zoho_df)
+                st.metric("Total Tickets Handled", f"{total_tickets}")
+                
+                st.write("**Ticket Breakdown by Channel**")
+                channel_counts = zoho_df['channel'].value_counts().reset_index()
+                channel_counts.columns = ['Channel', 'Ticket Count']
+                st.dataframe(channel_counts)
+                
+                st.write("**Ticket Breakdown by Category**")
+                category_counts = zoho_df['ticket_category'].value_counts().reset_index()
+                category_counts.columns = ['Category', 'Ticket Count']
+                st.dataframe(category_counts)
+                
+                st.write("**Ticket Breakdown by Subcategory**")
+                subcategory_counts = zoho_df['ticket_subcategory'].value_counts().reset_index()
+                subcategory_counts.columns = ['Subcategory', 'Ticket Count']
+                st.dataframe(subcategory_counts)
+                
+                try:
+                    fig = px.pie(channel_counts, values='Ticket Count', names='Channel', 
+                                title="Ticket Distribution by Channel")
+                    st.plotly_chart(fig)
+                except Exception as e:
+                    st.error(f"Error plotting ticket distribution: {str(e)}")
+                
+                st.download_button(
+                    label="📥 Download Zoho Data as CSV",
+                    data=zoho_df.to_csv(index=False),
+                    file_name="zoho_agent_data.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("No Zoho agent data available for the selected date range.")
+                st.write("Debug: Check the following:")
+                st.write(f"- Ensure data exists for {st.session_state.user} in the 'zoho_agent_data' table.")
+                st.write("- Verify the 'ticket_owner' column matches your name exactly.")
+                st.write("- Confirm RLS policies allow access to your data.")
+                if 'date' in zoho_df.columns:
+                    st.write("- Check if data exists within the selected date range.")
             
             st.subheader("📋 Your Performance History")
             st.dataframe(results)
