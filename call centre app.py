@@ -326,12 +326,27 @@ def main():
             max-height: 400px;
             overflow-y: auto;
             padding: 10px;
-            background-color: #f9f9f9;
+            background-color: #e5ddd5;
             border-radius: 8px;
         }
         .feedback-item {
-            border-bottom: 1px solid #ddd;
-            padding: 10px 0;
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 10px;
+            max-width: 70%;
+        }
+        .agent-msg {
+            background-color: #dcf8c6;
+            margin-left: auto;
+            text-align: right;
+        }
+        .manager-msg {
+            background-color: #fff;
+            margin-right: auto;
+        }
+        .timestamp {
+            font-size: 0.7em;
+            color: #666;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -354,6 +369,7 @@ def main():
         st.session_state.notifications_enabled = False
         st.session_state.auto_refresh = False
         st.session_state.last_refresh = datetime.now()
+        st.session_state.cleared_chats = set()  # Track cleared chats
 
     if not st.session_state.user:
         st.title("🔐 Login")
@@ -568,22 +584,33 @@ def main():
                 st.dataframe(feedback_df[display_columns])
                 st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="agent_feedback.csv")
 
-                st.subheader("Feedback Conversation")
-                feedback_df = feedback_df.sort_values(by='created_at', ascending=False)
-                latest_feedback = feedback_df.iloc[0] if not feedback_df.empty else None
+                st.subheader("Agent Conversations")
+                # Group by agent and filter out cleared chats
+                agents = feedback_df['agent_name'].unique()
+                agents = [a for a in agents if a not in st.session_state.cleared_chats]
+                for agent in agents:
+                    agent_df = feedback_df[feedback_df['agent_name'] == agent].sort_values('created_at', ascending=False)
+                    with st.expander(f"{agent} ({len(agent_df)} messages)"):
+                        if st.button("Clear Chat", key=f"clear_{agent}"):
+                            st.session_state.cleared_chats.add(agent)
+                            st.rerun()
+                        st.markdown('<div class="feedback-container">', unsafe_allow_html=True)
+                        for _, row in agent_df.iterrows():
+                            st.markdown('<div class="feedback-item agent-msg">', unsafe_allow_html=True)
+                            st.write(row['message'])
+                            st.markdown(f'<div class="timestamp">{row["created_at"]}</div>', unsafe_allow_html=True)
+                            st.markdown('</div>', unsafe_allow_html=True)
+                            if pd.notnull(row['manager_response']):
+                                st.markdown('<div class="feedback-item manager-msg">', unsafe_allow_html=True)
+                                st.write(row['manager_response'])
+                                st.markdown(f'<div class="timestamp">{row["response_timestamp"]}</div>', unsafe_allow_html=True)
+                                st.markdown('</div>', unsafe_allow_html=True)
+                            if row['id'] != (agent_df.iloc[0]['id'] if not agent_df.empty else None):
+                                if st.button("Reply", key=f"reply_{row['id']}"):
+                                    st.session_state.reply_to_feedback_id = row['id']
+                        st.markdown('</div>', unsafe_allow_html=True)
 
-                st.markdown('<div class="feedback-container">', unsafe_allow_html=True)
-                for _, row in feedback_df.iterrows():
-                    st.markdown('<div class="feedback-item">', unsafe_allow_html=True)
-                    st.markdown(f"**{row['agent_name']}** ({row['created_at']}): {row['message']}")
-                    if pd.notnull(row['manager_response']):
-                        st.markdown(f"**Manager ({row['response_timestamp']}):** {row['manager_response']}")
-                    if row['id'] != (latest_feedback['id'] if latest_feedback is not None else None):
-                        if st.button("Reply", key=f"reply_{row['id']}"):
-                            st.session_state.reply_to_feedback_id = row['id']
-                    st.markdown('</div>', unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-
+                # Response form
                 with st.form("respond_feedback_form"):
                     if 'reply_to_feedback_id' in st.session_state:
                         feedback_id = st.session_state.reply_to_feedback_id
@@ -594,7 +621,8 @@ def main():
                             st.warning("Selected feedback not found.")
                             feedback_id = None
                     else:
-                        feedback_id = latest_feedback['id'] if latest_feedback is not None else None
+                        latest_feedback = feedback_df.sort_values('created_at', ascending=False).iloc[0] if not feedback_df.empty else None
+                        feedback_id = latest_feedback['id'] if latest_feedback is not None and latest_feedback['agent_name'] not in st.session_state.cleared_chats else None
                         if feedback_id:
                             st.write(f"Replying to latest feedback from {latest_feedback['agent_name']}: {latest_feedback['message'][:50]}...")
                         else:
