@@ -259,7 +259,6 @@ def authenticate_user(supabase, name, password):
 
 def setup_realtime(supabase):
     st.warning("Real-time updates are disabled due to missing Realtime support. Data will not auto-refresh.")
-    # Placeholder for future Realtime implementation
 
 def main():
     st.set_page_config(page_title="Call Center Assessment System", layout="wide")
@@ -338,20 +337,20 @@ def main():
         st.rerun()
 
     # Notifications
-    # if st.session_state.get("notifications_enabled", False):
-    #     notifications = get_notifications(supabase)
-    #     with st.sidebar.expander(f"🔔 Notifications ({len(notifications)})"):
-    #         if notifications.empty:
-    #             st.write("No new notifications.")
-    #         else:
-    #             for _, notif in notifications.iterrows():
-    #                 st.write(notif["message"])
-    #                 if st.button("Mark as Read", key=f"notif_{notif['id']}"):
-    #                     supabase.table("notifications").update({"read": True}).eq("id", notif["id"]).execute()
-    #                     st.rerun()
-    # else:
-    #     with st.sidebar.expander("🔔 Notifications (0)"):
-    #         st.write("Notifications disabled (notifications table missing).")
+    if st.session_state.get("notifications_enabled", False):
+        notifications = get_notifications(supabase)
+        with st.sidebar.expander(f"🔔 Notifications ({len(notifications)})"):
+            if notifications.empty:
+                st.write("No new notifications.")
+            else:
+                for _, notif in notifications.iterrows():
+                    st.write(notif["message"])
+                    if st.button("Mark as Read", key=f"notif_{notif['id']}"):
+                        supabase.table("notifications").update({"read": True}).eq("id", notif["id"]).execute()
+                        st.rerun()
+    else:
+        with st.sidebar.expander("🔔 Notifications (0)"):
+            st.write("Notifications disabled (notifications table missing).")
 
     # Realtime setup
     if st.sidebar.checkbox("Enable Auto-Refresh", value=False, disabled=True):
@@ -666,7 +665,8 @@ def main():
                 if not zoho_df.empty:
                     total_tickets = zoho_df['id'].nunique()
                     st.metric("Total Tickets Handled", f"{total_tickets}")
-                    with st.expander("Debug: Raw Zoho Data"):
+                    show_debug = st.checkbox("Show Debug: Raw Zoho Data")
+                    if show_debug:
                         st.write(f"Logged-in user: {st.session_state.user}")
                         st.write(f"Unique ticket_owner values: {zoho_df['ticket_owner'].unique()}")
                         st.write(f"Total rows: {len(zoho_df)}")
