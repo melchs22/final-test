@@ -125,6 +125,9 @@ def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=Non
         
         if response.data:
             df = pd.DataFrame(response.data)
+            if 'id' not in df.columns:
+                st.error("The 'zoho_agent_data' table is missing an 'id' column, which is required for unique ticket counting.")
+                return pd.DataFrame()
             return df
         else:
             st.warning(f"No Zoho agent data found for {'agent ' + agent_name if agent_name else 'any agents'}.")
@@ -508,23 +511,23 @@ def main():
             
             st.subheader("📊 Your Zoho Agent Data Summary")
             if not zoho_df.empty:
-                total_tickets = len(zoho_df)
+                total_tickets = zoho_df['id'].nunique()
                 st.metric("Total Tickets Handled", f"{total_tickets}")
                 
                 st.write("**Ticket Breakdown by Channel**")
-                channel_counts = zoho_df['channel'].value_counts().reset_index()
+                channel_counts = zoho_df.groupby('channel')['id'].nunique().reset_index()
                 channel_counts.columns = ['Channel', 'Ticket Count']
                 st.dataframe(channel_counts)
                 
                 st.write("**Ticket Breakdown by Category**")
-                category_counts = zoho_df['ticket_category'].value_counts().reset_index()
+                category_counts = zoho_df.groupby('ticket_category')['id'].nunique().reset_index()
                 category_counts.columns = ['Category', 'Ticket Count']
                 st.dataframe(category_counts)
                 
                 st.write("**Ticket Breakdown by Subcategory**")
-                subcategory_counts = zoho_df['ticket_subcategory'].value_counts().reset_index()
+                subcategory_counts = zoho_df.groupby('ticket_subcategory')['id'].nunique().reset_index()
                 subcategory_counts.columns = ['Subcategory', 'Ticket Count']
-                st.dataframe(subcategory_counts)
+                st.dataframe(category_counts)
                 
                 try:
                     fig = px.pie(channel_counts, values='Ticket Count', names='Channel', 
@@ -544,7 +547,8 @@ def main():
                 st.write("Debug: Check the following:")
                 st.write(f"- Ensure data exists for {st.session_state.user} in the 'zoho_agent_data' table.")
                 st.write("- Verify the 'ticket_owner' column matches your name exactly.")
-                st.write("- Confirm RLS policies allow access to your data.")
+                st.write("- Confirm the 'id' column exists and contains unique ticket identifiers.")
+                st.write("- Check RLS policies allow access to your data.")
             
             st.subheader("📋 Your Performance History")
             st.dataframe(results)
