@@ -118,7 +118,7 @@ def get_performance(supabase, agent_name=None):
 
 def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=None):
     try:
-       query = supabase.table("zoho_agent_data").select("*")
+        query = supabase.table("zoho_agent_data").select("*")
         if agent_name:
             query = query.eq("ticket_owner", agent_name)
         if start_date and end_date:
