@@ -102,12 +102,8 @@ def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=Non
         query = supabase.table("zoho_agent_data").select("*").range(0, 14999)
         if agent_name:
             query = query.eq("ticket_owner", agent_name)
-        
         response = query.execute()
-
-        # 🔍 Add this line to log number of rows retrieved
-        st.write(f"✅ Supabase returned {len(response.data)} rows for agent: {agent_name}")
-
+        
         if response.data:
             df = pd.DataFrame(response.data)
             if 'id' not in df.columns:
@@ -126,6 +122,7 @@ def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=Non
         if "violates row-level security policy" in str(e):
             st.error("RLS policy is preventing data access. Ensure you have a policy allowing agents to view their own Zoho data.")
         return pd.DataFrame()
+        
 
 
 def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
