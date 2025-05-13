@@ -338,20 +338,20 @@ def main():
         st.rerun()
 
     # Notifications
-    if st.session_state.get("notifications_enabled", False):
-        notifications = get_notifications(supabase)
-        with st.sidebar.expander(f"🔔 Notifications ({len(notifications)})"):
-            if notifications.empty:
-                st.write("No new notifications.")
-            else:
-                for _, notif in notifications.iterrows():
-                    st.write(notif["message"])
-                    if st.button("Mark as Read", key=f"notif_{notif['id']}"):
-                        supabase.table("notifications").update({"read": True}).eq("id", notif["id"]).execute()
-                        st.rerun()
-    else:
-        with st.sidebar.expander("🔔 Notifications (0)"):
-            st.write("Notifications disabled (notifications table missing).")
+    # if st.session_state.get("notifications_enabled", False):
+    #     notifications = get_notifications(supabase)
+    #     with st.sidebar.expander(f"🔔 Notifications ({len(notifications)})"):
+    #         if notifications.empty:
+    #             st.write("No new notifications.")
+    #         else:
+    #             for _, notif in notifications.iterrows():
+    #                 st.write(notif["message"])
+    #                 if st.button("Mark as Read", key=f"notif_{notif['id']}"):
+    #                     supabase.table("notifications").update({"read": True}).eq("id", notif["id"]).execute()
+    #                     st.rerun()
+    # else:
+    #     with st.sidebar.expander("🔔 Notifications (0)"):
+    #         st.write("Notifications disabled (notifications table missing).")
 
     # Realtime setup
     if st.sidebar.checkbox("Enable Auto-Refresh", value=False, disabled=True):
