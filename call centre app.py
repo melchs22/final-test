@@ -118,7 +118,7 @@ def get_performance(supabase, agent_name=None):
 
 def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=None):
     try:
-        query = supabase.table("zoho_agent_data").select("*")
+        query - query = supabase.table("zoho_agent_data").select("*")
         if agent_name:
             query = query.eq("ticket_owner", agent_name)
         if start_date and end_date:
@@ -314,7 +314,7 @@ def main():
                         quality_score = st.number_input("Quality Score (%)", min_value=0.0, max_value=100.0)
                         product_knowledge = st.number_input("Product Knowledge (%)", min_value=0.0, max_value=100.0)
                         contact_success_rate = st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0)
-                       onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0)
+                        onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0)
                         reporting = st.number_input("Reporting (%)", min_value=0.0, max_value=100.0)
                         talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)
                         resolution_rate = st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0)
@@ -400,7 +400,7 @@ def main():
                     st.warning("No agents found in the system.")
                 else:
                     goals_response = supabase.table("goals").select("*").in_("agent_name", agents).execute()
-                    goals_df = pd.DataFrame(goods_response.data)
+                    goals_df = pd.DataFrame(goals_response.data)
                     
                     performance_df = get_performance(supabase)
                     performance_df['date'] = pd.to_datetime(performance_df['date'])
