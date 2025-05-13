@@ -97,24 +97,36 @@ def get_performance(supabase, agent_name=None):
         st.error(f"Error retrieving performance data: {str(e)}")
         return pd.DataFrame()
 
-def get_zoho_agent_data(supabase, agent_name=None):
+def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=None):
     try:
-        query = supabase.table("zoho_agent_data").select("*")
+        query = supabase.table("zoho_agent_data").select("*").range(0, 14999)
         if agent_name:
             query = query.eq("ticket_owner", agent_name)
+        
         response = query.execute()
+
+        # 🔍 Add this line to log number of rows retrieved
+        st.write(f"✅ Supabase returned {len(response.data)} rows for agent: {agent_name}")
+
         if response.data:
             df = pd.DataFrame(response.data)
-            if 'id' not in df.columns or 'ticket_owner' not in df.columns:
-                st.error("Missing required columns in zoho_agent_data.")
+            if 'id' not in df.columns:
+                st.error("The 'zoho_agent_data' table is missing an 'id' column, which is required for unique ticket counting.")
+                return pd.DataFrame()
+            if 'ticket_owner' not in df.columns:
+                st.error("The 'zoho_agent_data' table is missing a 'ticket_owner' column.")
                 return pd.DataFrame()
             return df
-        st.warning(f"No Zoho data for {agent_name or 'any agents'}.")
-        st.write("Debug: No rows returned.")
-        return pd.DataFrame()
+        else:
+            st.warning(f"No Zoho agent data found for agent '{agent_name}'.")
+            st.write("Debug: No rows returned from Supabase query.")
+            return pd.DataFrame()
     except Exception as e:
-        st.error(f"Error retrieving Zoho data: {str(e)}")
+        st.error(f"Error retrieving Zoho agent data: {str(e)}")
+        if "violates row-level security policy" in str(e):
+            st.error("RLS policy is preventing data access. Ensure you have a policy allowing agents to view their own Zoho data.")
         return pd.DataFrame()
+
 
 def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
     try:
