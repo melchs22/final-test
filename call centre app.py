@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 from supabase import create_client, Client
 
 def init_supabase():
@@ -258,17 +258,16 @@ def authenticate_user(supabase, name, password):
         return False, None, None
 
 def setup_realtime(supabase):
-    def on_update(payload):
-        st.session_state.data_updated = True
-    try:
-        for table in ["performance", "goals", "feedback", "notifications"]:
-            channel = supabase.realtime.channel(f"public:{table}")
-            channel.on("INSERT", on_update).on("UPDATE", on_update).subscribe()
-        st.session_state.realtime_enabled = True
-        st.sidebar.success("Real-time updates enabled.")
-    except Exception as e:
-        st.session_state.realtime_enabled = False
-        st.sidebar.warning(f"Real-time updates disabled: {str(e)}. Use manual refresh.")
+    # Polling-based refresh instead of Supabase Realtime
+    if st.session_state.get("auto_refresh", False):
+        current_time = datetime.now()
+        last_refresh = st.session_state.get("last_refresh", current_time)
+        if current_time - last_refresh >= timedelta(seconds=30):
+            st.session_state.data_updated = True
+            st.session_state.last_refresh = current_time
+        st.sidebar.success("Auto-refresh enabled (polling every 30 seconds).")
+    else:
+        st.sidebar.info("Auto-refresh disabled. Enable to poll data every 30 seconds.")
 
 def main():
     st.set_page_config(page_title="Call Center Assessment System", layout="wide")
@@ -324,7 +323,8 @@ def main():
         st.session_state.role = None
         st.session_state.data_updated = False
         st.session_state.notifications_enabled = False
-        st.session_state.realtime_enabled = False
+        st.session_state.auto_refresh = False
+        st.session_state.last_refresh = datetime.now()
 
     if not st.session_state.user:
         st.title("🔐 Login")
@@ -363,12 +363,12 @@ def main():
         with st.sidebar.expander("🔔 Notifications (0)"):
             st.write("Notifications disabled (notifications table missing).")
 
-    # Realtime setup
-    if st.sidebar.checkbox("Enable Auto-Refresh", value=True):
-        setup_realtime(supabase)
-        if st.session_state.get("realtime_enabled", False) and st.session_state.get("data_updated", False):
-            st.session_state.data_updated = False
-            st.rerun()
+    # Auto-refresh setup
+    st.session_state.auto_refresh = st.sidebar.checkbox("Enable Auto-Refresh", value=False)
+    setup_realtime(supabase)
+    if st.session_state.get("auto_refresh", False) and st.session_state.get("data_updated", False):
+        st.session_state.data_updated = False
+        st.rerun()
 
     st.sidebar.info(f"👤 Logged in as: {st.session_state.user}")
     st.sidebar.info(f"🎓 Role: {st.session_state.role}")
