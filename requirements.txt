@@ -5,3 +5,4 @@ supabase>=1.0.3
 httpx>=0.27.0
 httpx-oauth>=0.10.0
 bcrypt
+pyjwt
