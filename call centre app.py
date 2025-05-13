@@ -146,13 +146,19 @@ def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=Non
 
 def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
     try:
+        # Check if created_by column exists
+        schema_check = supabase.table("goals").select("created_by").limit(1).execute()
+        include_created_by = 'created_by' in schema_check.data[0] if schema_check.data else False
+        
         goal_data = {
             "agent_name": agent_name,
             "metric": metric,
             "target_value": target_value,
-            "created_by": manager_name,
             "status": "Pending"
         }
+        if include_created_by:
+            goal_data["created_by"] = manager_name
+            
         response = supabase.table("goals").select("*").eq("agent_name", agent_name).eq("metric", metric).execute()
         if response.data:
             supabase.table("goals").update(goal_data).eq("agent_name", agent_name).eq("metric", metric).execute()
@@ -163,6 +169,8 @@ def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
         st.error(f"Error setting goal: {str(e)}")
         if "violates row-level security policy" in str(e):
             st.error("You don't have permission to set goals. Check your role or RLS policies.")
+        elif "Could not find the 'created_by' column" in str(e):
+            st.error("The 'goals' table is missing the 'created_by' column. Please update the database schema.")
         return False
 
 def get_feedback(supabase, agent_name=None):
@@ -185,17 +193,25 @@ def get_feedback(supabase, agent_name=None):
 
 def respond_to_feedback(supabase, feedback_id, manager_response, manager_name):
     try:
+        # Check if updated_by column exists
+        schema_check = supabase.table("feedback").select("updated_by").limit(1).execute()
+        include_updated_by = 'updated_by' in schema_check.data[0] if schema_check.data else False
+        
         response_data = {
             "manager_response": manager_response,
-            "response_timestamp": datetime.now().isoformat(),
-            "updated_by": manager_name
+            "response_timestamp": datetime.now().isoformat()
         }
+        if include_updated_by:
+            response_data["updated_by"] = manager_name
+            
         supabase.table("feedback").update(response_data).eq("id", feedback_id).execute()
         return True
     except Exception as e:
         st.error(f"Error responding to feedback: {str(e)}")
         if "violates row-level security policy" in str(e):
             st.error("You don't have permission to respond to feedback. Check your role or RLS policies.")
+        elif "Could not find the 'updated_by' column" in str(e):
+            st.error("The 'feedback' table is missing the 'updated_by' column. Please update the database schema.")
         return False
 
 def assess_performance(performance_df, kpis):
@@ -461,7 +477,7 @@ def main():
                             if set_agent_goal(supabase, agent, metric, target_value, st.session_state.user):
                                 st.success(f"Goal set for {agent} on {metric}!")
                             else:
-                                st.error("Failed to set goal. Check your permissions.")
+                                st.error("Failed to set goal. Check your permissions or database schema.")
                     
                     st.subheader("Current Goals")
                     goals_df = supabase.table("goals").select("*").in_("agent_name", agents).execute()
@@ -470,7 +486,11 @@ def main():
                         goals_display_df['target_value'] = goals_display_df['target_value'].apply(
                             lambda x: f"{x:.1f}{' sec' if goals_display_df.loc[goals_display_df['target_value'] == x, 'metric'].iloc[0] == 'aht' else ''}"
                         )
-                        st.dataframe(goals_display_df[['agent_name', 'metric', 'target_value', 'status', 'created_by', 'created_at']])
+                        display_columns = ['agent_name', 'metric', 'target_value', 'status']
+                        if 'created_by' in goals_display_df.columns:
+                            display_columns.append('created_by')
+                        display_columns.append('created_at')
+                        st.dataframe(goals_display_df[display_columns])
                         st.download_button(
                             label="📥 Download Goals as CSV",
                             data=goals_display_df.to_csv(index=False),
@@ -486,7 +506,10 @@ def main():
             st.header("💬 View and Respond to Agent Feedback")
             feedback_df = get_feedback(supabase)
             if not feedback_df.empty:
-                st.dataframe(feedback_df[['agent_name', 'message', 'created_at', 'manager_response', 'response_timestamp']])
+                display_columns = ['agent_name', 'message', 'created_at', 'manager_response', 'response_timestamp']
+                if 'updated_by' in feedback_df.columns:
+                    display_columns.append('updated_by')
+                st.dataframe(feedback_df[display_columns])
                 st.subheader("Respond to Feedback")
                 with st.form("respond_feedback_form"):
                     feedback_id = st.selectbox(
@@ -500,7 +523,7 @@ def main():
                             st.success("Response submitted successfully!")
                             st.rerun()
                         else:
-                            st.error("Failed to submit response. Check your permissions.")
+                            st.error("Failed to submit response. Check your permissions or database schema.")
                 st.download_button(
                     label="📥 Download Feedback as CSV",
                     data=feedback_df.to_csv(index=False),
@@ -673,7 +696,7 @@ def main():
                             else:
                                 progress = min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
                             st.progress(int(progress))
-                            st.write(f"{metric.replace('_', ' '). Mititle()}: Target {row['target_value']:.1f}{' sec' if metric == 'aht' else '%'}, Current {current_value:.1f}{' sec' if metric == 'aht' else '%'}, Status: {row['status']}")
+                            st.write(f"{metric.replace('_', ' ').title()}: Target {row['target_value']:.1f}{' sec' if metric == 'aht' else '%'}, Current {current_value:.1f}{' sec' if metric == 'aht' else '%'}, Status: {row['status']}")
                             if st.button(f"Update {metric} Goal", key=f"update_{metric}"):
                                 new_target = st.number_input(f"New Target for {metric}", value=float(row['target_value']))
                                 supabase.table("goals").update({"target_value": new_target}).eq("id", row['id']).execute()
@@ -698,7 +721,10 @@ def main():
                 if not feedback_df.empty:
                     feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
                     feedback_df['response_timestamp'] = pd.to_datetime(feedback_df['response_timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
-                    st.dataframe(feedback_df[['message', 'created_at', 'manager_response', 'response_timestamp']])
+                    display_columns = ['message', 'created_at', 'manager_response', 'response_timestamp']
+                    if 'updated_by' in feedback_df.columns:
+                        display_columns.append('updated_by')
+                    st.dataframe(feedback_df[display_columns])
                     st.download_button(
                         label="📥 Download Feedback History as CSV",
                         data=feedback_df.to_csv(index=False),
