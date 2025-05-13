@@ -120,23 +120,53 @@ def get_performance(supabase, agent_name=None):
         st.error(f"Error retrieving performance data: {str(e)}")
         return pd.DataFrame()
 
-def get_zoho_agent_data(supabase, agent_name=None):
+def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=None):
     try:
-        query = supabase.table("zoho_agent_data").select("*")
-        if agent_name:
-            query = query.eq("ticket_owner", agent_name)
-        response = query.execute()
-        if response.data:
-            df = pd.DataFrame(response.data)
-            if 'id' not in df.columns or 'ticket_owner' not in df.columns:
-                st.error("Missing required columns in zoho_agent_data.")
+        all_data = []
+        chunk_size = 1000
+        offset = 0
+
+        while True:
+            query = supabase.table("zoho_agent_data").select("*").range(offset, offset + chunk_size - 1)
+
+            # Filter by agent if provided
+            if agent_name:
+                query = query.eq("ticket_owner", agent_name)
+
+            response = query.execute()
+
+            if not response.data:
+                break  # No more data to fetch
+
+            all_data.extend(response.data)
+
+            if len(response.data) < chunk_size:
+                break  # Last page reached
+
+            offset += chunk_size
+
+        if all_data:
+            df = pd.DataFrame(all_data)
+
+            # Safety checks for expected columns
+            if 'id' not in df.columns:
+                st.error("❌ The 'zoho_agent_data' table is missing an 'id' column, required for unique ticket counting.")
                 return pd.DataFrame()
+            if 'ticket_owner' not in df.columns:
+                st.error("❌ The 'zoho_agent_data' table is missing a 'ticket_owner' column.")
+                return pd.DataFrame()
+
+            st.write(f"✅ Supabase returned {len(df)} rows for agent: {agent_name or 'All'}")
             return df
-        st.warning(f"No Zoho data for {agent_name or 'any agents'}.")
-        st.write("Debug: No rows returned.")
-        return pd.DataFrame()
+        else:
+            st.warning(f"⚠️ No Zoho agent data found for agent '{agent_name}'.")
+            st.write("Debug: No rows returned from Supabase query.")
+            return pd.DataFrame()
+
     except Exception as e:
-        st.error(f"Error retrieving Zoho data: {str(e)}")
+        st.error(f"❌ Error retrieving Zoho agent data: {str(e)}")
+        if "violates row-level security policy" in str(e):
+            st.error("🔒 RLS policy is blocking data access. Ensure agents are allowed to view their own data.")
         return pd.DataFrame()
 
 def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
