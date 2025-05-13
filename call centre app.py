@@ -128,9 +128,13 @@ def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=Non
             if 'id' not in df.columns:
                 st.error("The 'zoho_agent_data' table is missing an 'id' column, which is required for unique ticket counting.")
                 return pd.DataFrame()
+            if 'ticket_owner' not in df.columns:
+                st.error("The 'zoho_agent_data' table is missing a 'ticket_owner' column.")
+                return pd.DataFrame()
             return df
         else:
-            st.warning(f"No Zoho agent data found for {'agent ' + agent_name if agent_name else 'any agents'}.")
+            st.warning(f"No Zoho agent data found for agent '{agent_name}'.")
+            st.write("Debug: No rows returned from Supabase query.")
             return pd.DataFrame()
     except Exception as e:
         st.error(f"Error retrieving Zoho agent data: {str(e)}")
@@ -514,6 +518,13 @@ def main():
                 total_tickets = zoho_df['id'].nunique()
                 st.metric("Total Tickets Handled", f"{total_tickets}")
                 
+                with st.expander("Debug: Raw Zoho Data"):
+                    st.write(f"Logged-in user: {st.session_state.user}")
+                    st.write(f"Unique ticket_owner values in data: {zoho_df['ticket_owner'].unique()}")
+                    st.write(f"Total rows retrieved: {len(zoho_df)}")
+                    st.write(f"Unique ticket IDs: {zoho_df['id'].nunique()}")
+                    st.dataframe(zoho_df)
+                
                 st.write("**Ticket Breakdown by Channel**")
                 channel_counts = zoho_df.groupby('channel')['id'].nunique().reset_index()
                 channel_counts.columns = ['Channel', 'Ticket Count']
@@ -527,7 +538,7 @@ def main():
                 st.write("**Ticket Breakdown by Subcategory**")
                 subcategory_counts = zoho_df.groupby('ticket_subcategory')['id'].nunique().reset_index()
                 subcategory_counts.columns = ['Subcategory', 'Ticket Count']
-                st.dataframe(category_counts)
+                st.dataframe(subcategory_counts)
                 
                 try:
                     fig = px.pie(channel_counts, values='Ticket Count', names='Channel', 
@@ -545,10 +556,12 @@ def main():
             else:
                 st.info("No Zoho agent data available.")
                 st.write("Debug: Check the following:")
-                st.write(f"- Ensure data exists for {st.session_state.user} in the 'zoho_agent_data' table.")
-                st.write("- Verify the 'ticket_owner' column matches your name exactly.")
+                st.write(f"- Ensure data exists for '{st.session_state.user}' in the 'zoho_agent_data' table.")
+                st.write("- Verify the 'ticket_owner' column matches your name exactly (case-sensitive, no extra spaces).")
                 st.write("- Confirm the 'id' column exists and contains unique ticket identifiers.")
                 st.write("- Check RLS policies allow access to your data.")
+                st.write("- Run this SQL in Supabase to verify data:")
+                st.code(f"SELECT COUNT(DISTINCT id) FROM zoho_agent_data WHERE ticket_owner = '{st.session_state.user}';")
             
             st.subheader("📋 Your Performance History")
             st.dataframe(results)
@@ -634,7 +647,7 @@ def main():
         else:
             st.info("No performance data available for you yet. Please contact your manager to ensure your performance data has been entered.")
             st.write("Debug: Check the following:")
-            st.write(f"- Ensure performance data exists for {st.session_state.user} in the 'performance' table.")
+            st.write(f"- Ensure performance data exists for '{st.session_state.user}' in the 'performance' table.")
             st.write("- Verify RLS policies allow you to view your own data.")
             st.write("- Confirm that the 'agent_name' in the performance table matches your name exactly.")
 
