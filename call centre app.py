@@ -121,16 +121,10 @@ def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=Non
         query = supabase.table("zoho_agent_data").select("*")
         if agent_name:
             query = query.eq("ticket_owner", agent_name)
-        if start_date and end_date:
-            # Assuming 'date' column exists; remove these lines if no 'date' column
-            query = query.gte("date", start_date.strftime("%Y-%m-%d")).lte("date", end_date.strftime("%Y-%m-%d"))
         response = query.execute()
         
         if response.data:
             df = pd.DataFrame(response.data)
-            # Convert date to datetime if present
-            if 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date'])
             return df
         else:
             st.warning(f"No Zoho agent data found for {'agent ' + agent_name if agent_name else 'any agents'}.")
@@ -240,7 +234,7 @@ def main():
         - **Login**: Use your name and password to log in.
         - **Managers**: Set KPIs, input performance data, view assessments, and manage agent goals.
         - **Agents**: View your performance metrics, history, goals, Zoho ticket data, and submit feedback.
-        - **Date Filter**: Use the date pickers to filter data.
+        - **Date Filter**: Use the date pickers to filter performance data.
         - **Trends**: Add performance data with multiple dates to see trends.
         """)
     st.sidebar.info(f"👤 Logged in as: {st.session_state.user}")
@@ -467,13 +461,13 @@ def main():
         
         col1, col2 = st.columns(2)
         with col1:
-            start_date = st.date_input("Start Date", value=pd.to_datetime('2025-05-01'))
+            start_date = st.date_input("Start Date (Performance Data)", value=pd.to_datetime('2025-05-01'))
         with col2:
-            end_date = st.date_input("End Date", value=datetime.now().date())
+            end_date = st.date_input("End Date (Performance Data)", value=datetime.now().date())
         
         performance_df = get_performance(supabase, st.session_state.user)
         all_performance_df = get_performance(supabase)
-        zoho_df = get_zoho_agent_data(supabase, st.session_state.user, start_date, end_date)
+        zoho_df = get_zoho_agent_data(supabase, st.session_state.user)
         
         if not performance_df.empty and not all_performance_df.empty:
             performance_df['date'] = pd.to_datetime(performance_df['date'])
@@ -546,13 +540,11 @@ def main():
                     mime="text/csv"
                 )
             else:
-                st.info("No Zoho agent data available for the selected date range.")
+                st.info("No Zoho agent data available.")
                 st.write("Debug: Check the following:")
                 st.write(f"- Ensure data exists for {st.session_state.user} in the 'zoho_agent_data' table.")
                 st.write("- Verify the 'ticket_owner' column matches your name exactly.")
                 st.write("- Confirm RLS policies allow access to your data.")
-                if 'date' in zoho_df.columns:
-                    st.write("- Check if data exists within the selected date range.")
             
             st.subheader("📋 Your Performance History")
             st.dataframe(results)
