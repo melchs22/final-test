@@ -11,7 +11,6 @@ def init_supabase():
         url = st.secrets["supabase"]["url"]
         key = st.secrets["supabase"]["key"]
         
-        # Make sure URL includes https:// prefix
         if not url.startswith("https://"):
             url = f"https://{url}"
             
@@ -27,7 +26,6 @@ def init_supabase():
 # Safe database check - doesn't try to create/insert data
 def check_db(supabase):
     try:
-        # Just check if tables exist by attempting to read
         user_response = supabase.table("users").select("count").limit(1).execute()
         kpi_response = supabase.table("kpis").select("count").limit(1).execute()
         perf_response = supabase.table("performance").select("count").limit(1).execute()
@@ -45,13 +43,10 @@ def get_db_connection():
 def save_kpis(supabase, kpis):
     try:
         for metric, threshold in kpis.items():
-            # Check if KPI exists
             response = supabase.table("kpis").select("*").eq("metric", metric).execute()
             if len(response.data) == 0:
-                # KPI doesn't exist, insert
                 supabase.table("kpis").insert({"metric": metric, "threshold": threshold}).execute()
             else:
-                # KPI exists, update
                 supabase.table("kpis").update({"threshold": threshold}).eq("metric", metric).execute()
         return True
     except Exception as e:
@@ -64,13 +59,11 @@ def save_kpis(supabase, kpis):
 def get_kpis(supabase):
     try:
         response = supabase.table("kpis").select("*").execute()
-        # Ensure all values are floats (except call_volume which should be int)
         kpis = {}
         for row in response.data:
             metric = row["metric"]
             value = row["threshold"]
             
-            # Convert to appropriate type based on metric
             if metric == "call_volume":
                 kpis[metric] = int(float(value)) if value is not None else 50
             else:
@@ -81,11 +74,11 @@ def get_kpis(supabase):
         return {}
 
 # Save performance data with error handling
-def save_performance(supabase, agent_email, data):
+def save_performance(supabase, agent_name, data):
     try:
         date = datetime.now().strftime("%Y-%m-%d")
         performance_data = {
-            "agent_email": agent_email,
+            "agent_name": agent_name,  # Changed from agent_email
             "attendance": data['attendance'],
             "quality_score": data['quality_score'],
             "product_knowledge": data['product_knowledge'],
@@ -109,34 +102,32 @@ def save_performance(supabase, agent_email, data):
         return False
 
 # Get performance data with enhanced error handling and debugging
-def get_performance(supabase, agent_email=None):
+def get_performance(supabase, agent_name=None):
     try:
-        if agent_email:
-            st.write(f"Fetching performance data for agent: {agent_email}")
-            response = supabase.table("performance").select("*").eq("agent_email", agent_email).execute()
+        if agent_name:
+            st.write(f"Fetching performance data for agent: {agent_name}")
+            response = supabase.table("performance").select("*").eq("agent_name", agent_name).execute()
         else:
             st.write("Fetching performance data for all agents")
             response = supabase.table("performance").select("*").execute()
         
-        st.write(f"Raw response data: {response.data}")  # Debugging output
+        st.write(f"Raw response data: {response.data}")
         
         if response.data:
             df = pd.DataFrame(response.data)
-            # Convert numeric columns to appropriate types
             numeric_cols = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
                            'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat']
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            # Convert call_volume to int
             if 'call_volume' in df.columns:
                 df['call_volume'] = pd.to_numeric(df['call_volume'], errors='coerce').fillna(0).astype(int)
             
-            st.write(f"Processed DataFrame: {df.head()}")  # Debugging output
+            st.write(f"Processed DataFrame: {df.head()}")
             return df
         else:
-            st.warning(f"No performance data found for {'agent ' + agent_email if agent_email else 'any agents'}.")
+            st.warning(f"No performance data found for {'agent ' + agent_name if agent_name else 'any agents'}.")
             return pd.DataFrame()
     except Exception as e:
         st.error(f"Error retrieving performance data: {str(e)}")
@@ -160,7 +151,6 @@ def assess_performance(performance_df, kpis):
             else:
                 results[f'{metric}_pass'] = results[metric] >= kpis.get(metric, 50)
     
-    # Only calculate if all required columns exist
     pass_columns = [f'{m}_pass' for m in metrics if f'{m}_pass' in results.columns]
     if pass_columns:
         results['overall_score'] = results[pass_columns].mean(axis=1) * 100
@@ -168,31 +158,14 @@ def assess_performance(performance_df, kpis):
     return results
 
 # Improved authentication with Supabase Auth
-def authenticate_user(supabase, email, password):
+def authenticate_user(supabase, name, password):
     try:
-        # First try proper Supabase Auth if it's set up
-        try:
-            response = supabase.auth.sign_in_with_password({
-                "email": email,
-                "password": password
-            })
-            user = response.user
-            
-            # Get role from users table
-            user_data = supabase.table("users").select("*").eq("email", email).execute()
-            if user_data.data:
-                role = user_data.data[0]["role"]
-            else:
-                role = "User"  # Default role
-                
-            return True, email, role
-        except Exception as auth_e:
-            # Fallback to simple check (for demo only - not secure)
-            user_response = supabase.table("users").select("*").eq("email", email).execute()
-            if user_response.data:
-                return True, email, user_response.data[0]["role"]
-            else:
-                return False, None, None
+        # Fallback to simple check (for demo only - not secure)
+        user_response = supabase.table("users").select("*").eq("name", name).execute()
+        if user_response.data:
+            return True, name, user_response.data[0]["role"]
+        else:
+            return False, None, None
     except Exception as e:
         st.error(f"Authentication error: {str(e)}")
         return False, None, None
@@ -204,7 +177,6 @@ def main():
     # Initialize Supabase client
     try:
         supabase = init_supabase()
-        # Safe check that doesn't modify data
         check_db(supabase)
     except Exception as e:
         st.error(f"Failed to connect to Supabase: {str(e)}")
@@ -219,14 +191,14 @@ def main():
     if not st.session_state.user:
         st.title("Login")
         
-        # Simple login form (you can expand this to use Supabase Auth UI)
+        # Simple login form
         with st.form("login_form"):
-            email = st.text_input("Email")
+            name = st.text_input("Name")  # Changed from Email to Name
             password = st.text_input("Password", type="password")
             submit = st.form_submit_button("Login")
             
             if submit:
-                success, user, role = authenticate_user(supabase, email, password)
+                success, user, role = authenticate_user(supabase, name, password)
                 if success:
                     st.session_state.user = user
                     st.session_state.role = role
@@ -235,7 +207,6 @@ def main():
                 else:
                     st.error("Login failed. Invalid credentials or user not found.")
         
-        # Note about Supabase Auth
         st.info("Note: For production, you should use Supabase Authentication which provides secure user management.")
         return
 
@@ -260,7 +231,6 @@ def main():
             kpis = get_kpis(supabase)
             
             with st.form("kpi_form"):
-                # Ensure all values are the correct type for number_input
                 attendance = st.number_input("Attendance (%, min)", 
                                             value=float(kpis.get('attendance', 95.0)), 
                                             min_value=0.0, 
@@ -326,9 +296,8 @@ def main():
         with tabs[1]:
             st.header("Input Agent Performance")
             try:
-                # Get agents
                 response = supabase.table("users").select("*").eq("role", "Agent").execute()
-                agents = [user["email"] for user in response.data]
+                agents = [user["name"] for user in response.data]  # Changed from email to name
                 
                 if not agents:
                     st.warning("No agents found in the system. Please add agents in the Supabase dashboard.")
@@ -377,16 +346,15 @@ def main():
                 st.dataframe(results)
                 st.subheader("Performance Overview")
                 try:
-                    fig = px.bar(results, x='agent_email', y='overall_score', color='agent_email', 
+                    fig = px.bar(results, x='agent_name', y='overall_score', color='agent_name', 
                                 title="Agent Overall Scores", labels={'overall_score': 'Score (%)'})
                     st.plotly_chart(fig)
                     
-                    # Add date filtering
                     if 'date' in results.columns:
                         st.subheader("Performance Trends")
                         dates = sorted(results['date'].unique())
                         if len(dates) > 1:
-                            fig2 = px.line(results, x='date', y='overall_score', color='agent_email',
+                            fig2 = px.line(results, x='date', y='overall_score', color='agent_name',
                                           title="Score Trends Over Time", labels={'overall_score': 'Score (%)'})
                             st.plotly_chart(fig2)
                 except Exception as e:
@@ -398,7 +366,6 @@ def main():
     elif st.session_state.role == "Agent":
         st.title(f"Agent Dashboard - {st.session_state.user}")
         
-        # Display image for josephkavuma606@gmail.com
         if st.session_state.user == "Joseph Kavuma":
             try:
                 st.image("Joseph.jpg", caption="Agent Profile", width=150)
@@ -410,15 +377,12 @@ def main():
             kpis = get_kpis(supabase)
             results = assess_performance(performance_df, kpis)
             
-            # Calculate performance metrics: average for most, sum for call_volume
             st.subheader("Your Performance Metrics (Averages)")
-            # Calculate averages for most metrics
             avg_metrics = results[[
                 'overall_score', 'quality_score', 'csat', 'attendance', 
                 'resolution_rate', 'contact_success_rate', 'aht', 
                 'talk_time'
             ]].mean()
-            # Calculate sum for call_volume
             total_call_volume = results['call_volume'].sum()
             
             col1, col2, col3 = st.columns(3)
@@ -435,17 +399,13 @@ def main():
                 st.metric("Talk Time", f"{avg_metrics['talk_time']:.1f} sec")
                 st.metric("Call Volume", f"{total_call_volume:.0f} calls")
             
-            # show full history
             st.subheader("Your Performance History")
             st.dataframe(results)
             
             try:
-                # Performance over time (monthly)
                 st.subheader("Your Score Over Time (Monthly)")
-                # Convert date to datetime and extract year-month
                 results['date'] = pd.to_datetime(results['date'])
                 results['year_month'] = results['date'].dt.to_period('M').astype(str)
-                # Group by year_month and calculate mean
                 monthly_scores = results.groupby('year_month')['overall_score'].mean().reset_index()
                 
                 fig = px.line(
@@ -457,7 +417,6 @@ def main():
                 )
                 st.plotly_chart(fig)
                 
-                # Metrics by category (averages)
                 st.subheader("Performance by Category (Averages)")
                 metrics_df = results[[
                     'quality_score', 'attendance', 'resolution_rate', 
@@ -481,7 +440,7 @@ def main():
             st.write("Debug: Check the following:")
             st.write(f"- Ensure performance data exists for {st.session_state.user} in the 'performance' table.")
             st.write("- Verify RLS policies allow you to view your own data.")
-            st.write("- Confirm that the 'agent_email' in the performance table matches your email exactly.")
+            st.write("- Confirm that the 'agent_name' in the performance table matches your name exactly.")
 
 if __name__ == "__main__":
     main()
