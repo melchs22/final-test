@@ -314,7 +314,7 @@ def main():
                         quality_score = st.number_input("Quality Score (%)", min_value=0.0, max_value=100.0)
                         product_knowledge = st.number_input("Product Knowledge (%)", min_value=0.0, max_value=100.0)
                         contact_success_rate = st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0)
-                        onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100 filetype=python
+                       onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0)
                         reporting = st.number_input("Reporting (%)", min_value=0.0, max_value=100.0)
                         talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)
                         resolution_rate = st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0)
