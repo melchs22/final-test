@@ -17,13 +17,36 @@ def init_supabase():
         raise e
 
 def check_db(supabase):
-    try:
-        for table in ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications"]:
+    required_tables = ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications"]
+    critical_tables = ["users", "goals", "feedback", "performance"]
+    missing_critical = []
+    missing_non_critical = []
+    
+    for table in required_tables:
+        try:
             supabase.table(table).select("count").limit(1).execute()
+        except Exception as e:
+            if 'relation' in str(e).lower() and 'does not exist' in str(e).lower():
+                if table in critical_tables:
+                    missing_critical.append(table)
+                else:
+                    missing_non_critical.append(table)
+            else:
+                st.sidebar.warning(f"Error accessing {table}: {str(e)}")
+    
+    if missing_critical:
+        st.sidebar.error(f"Critical tables missing: {', '.join(missing_critical)}. Please create them to use the app.")
+        return False
+    if missing_non_critical:
+        st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}. Some features (e.g., notifications) may be unavailable.")
+        if "notifications" in missing_non_critical:
+            st.session_state.notifications_enabled = False
+        else:
+            st.session_state.notifications_enabled = True
+    else:
+        st.session_state.notifications_enabled = True
         st.sidebar.success("✅ Connected to database successfully")
-    except Exception as e:
-        st.sidebar.error(f"Database check error: {str(e)}")
-        st.sidebar.info("Ensure tables exist and RLS policies allow access.")
+    return True
 
 def save_kpis(supabase, kpis):
     try:
@@ -70,7 +93,7 @@ def save_performance(supabase, agent_name, data):
             "date": date
         }
         supabase.table("performance").insert(performance_data).execute()
-        update_goal_status(supabase, agent_name)  # Update goal statuses
+        update_goal_status(supabase, agent_name)
         return True
     except Exception as e:
         st.error(f"Error saving performance data: {str(e)}")
@@ -97,33 +120,24 @@ def get_performance(supabase, agent_name=None):
         st.error(f"Error retrieving performance data: {str(e)}")
         return pd.DataFrame()
 
-def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=None):
+def get_zoho_agent_data(supabase, agent_name=None):
     try:
-        query = supabase.table("zoho_agent_data").select("*").range(0, 14999)
+        query = supabase.table("zoho_agent_data").select("*")
         if agent_name:
             query = query.eq("ticket_owner", agent_name)
         response = query.execute()
-        
         if response.data:
             df = pd.DataFrame(response.data)
-            if 'id' not in df.columns:
-                st.error("The 'zoho_agent_data' table is missing an 'id' column, which is required for unique ticket counting.")
-                return pd.DataFrame()
-            if 'ticket_owner' not in df.columns:
-                st.error("The 'zoho_agent_data' table is missing a 'ticket_owner' column.")
+            if 'id' not in df.columns or 'ticket_owner' not in df.columns:
+                st.error("Missing required columns in zoho_agent_data.")
                 return pd.DataFrame()
             return df
-        else:
-            st.warning(f"No Zoho agent data found for agent '{agent_name}'.")
-            st.write("Debug: No rows returned from Supabase query.")
-            return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error retrieving Zoho agent data: {str(e)}")
-        if "violates row-level security policy" in str(e):
-            st.error("RLS policy is preventing data access. Ensure you have a policy allowing agents to view their own Zoho data.")
+        st.warning(f"No Zoho data for {agent_name or 'any agents'}.")
+        st.write("Debug: No rows returned.")
         return pd.DataFrame()
-        
-
+    except Exception as e:
+        st.error(f"Error retrieving Zoho data: {str(e)}")
+        return pd.DataFrame()
 
 def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
     try:
@@ -189,24 +203,31 @@ def respond_to_feedback(supabase, feedback_id, manager_response, manager_name):
         if include_updated_by:
             response_data["updated_by"] = manager_name
         supabase.table("feedback").update(response_data).eq("id", feedback_id).execute()
-        # Notify agent
-        feedback = supabase.table("feedback").select("agent_name").eq("id", feedback_id).execute()
-        if feedback.data:
-            agent_name = feedback.data[0]["agent_name"]
-            agent = supabase.table("users").select("id").eq("name", agent_name).execute()
-            if agent.data:
-                supabase.table("notifications").insert({
-                    "user_id": agent.data[0]["id"],
-                    "message": f"Manager responded to your feedback: {manager_response[:50]}..."
-                }).execute()
+        if st.session_state.get("notifications_enabled", False):
+            feedback = supabase.table("feedback").select("agent_name").eq("id", feedback_id).execute()
+            if feedback.data:
+                agent_name = feedback.data[0]["agent_name"]
+                agent = supabase.table("users").select("id").eq("name", agent_name).execute()
+                if agent.data:
+                    supabase.table("notifications").insert({
+                        "user_id": agent.data[0]["id"],
+                        "message": f"Manager responded to your feedback: {manager_response[:50]}..."
+                    }).execute()
         return True
     except Exception as e:
         st.error(f"Error responding to feedback: {str(e)}")
         return False
 
 def get_notifications(supabase):
+    if not st.session_state.get("notifications_enabled", False):
+        return pd.DataFrame()
     try:
-        response = supabase.table("notifications").select("*").eq("user_id", auth.uid()).eq("read", False).execute()
+        user_response = supabase.table("users").select("id").eq("name", st.session_state.user).execute()
+        if not user_response.data:
+            st.warning("User not found in users table.")
+            return pd.DataFrame()
+        user_id = user_response.data[0]["id"]
+        response = supabase.table("notifications").select("*").eq("user_id", user_id).eq("read", False).execute()
         return pd.DataFrame(response.data) if response.data else pd.DataFrame()
     except Exception as e:
         st.error(f"Error retrieving notifications: {str(e)}")
@@ -237,11 +258,8 @@ def authenticate_user(supabase, name, password):
         return False, None, None
 
 def setup_realtime(supabase):
-    def on_update(payload):
-        st.session_state.data_updated = True
-    for table in ["performance", "goals", "feedback", "notifications"]:
-        channel = supabase.realtime.channel(f"public:{table}")
-        channel.on("INSERT", on_update).on("UPDATE", on_update).subscribe()
+    st.warning("Real-time updates are disabled due to missing Realtime support. Data will not auto-refresh.")
+    # Placeholder for future Realtime implementation
 
 def main():
     st.set_page_config(page_title="Call Center Assessment System", layout="wide")
@@ -283,7 +301,9 @@ def main():
 
     try:
         supabase = init_supabase()
-        check_db(supabase)
+        if not check_db(supabase):
+            st.error("Critical database tables are missing. Please check the sidebar for details.")
+            st.stop()
         global auth
         auth = supabase.auth
     except Exception as e:
@@ -294,6 +314,7 @@ def main():
         st.session_state.user = None
         st.session_state.role = None
         st.session_state.data_updated = False
+        st.session_state.notifications_enabled = False
 
     if not st.session_state.user:
         st.title("🔐 Login")
@@ -317,29 +338,33 @@ def main():
         st.rerun()
 
     # Notifications
-    notifications = get_notifications(supabase)
-    with st.sidebar.expander(f"🔔 Notifications ({len(notifications)})"):
-        if notifications.empty:
-            st.write("No new notifications.")
-        else:
-            for _, notif in notifications.iterrows():
-                st.write(notif["message"])
-                if st.button("Mark as Read", key=f"notif_{notif['id']}"):
-                    supabase.table("notifications").update({"read": True}).eq("id", notif["id"]).execute()
-                    st.rerun()
+    if st.session_state.get("notifications_enabled", False):
+        notifications = get_notifications(supabase)
+        with st.sidebar.expander(f"🔔 Notifications ({len(notifications)})"):
+            if notifications.empty:
+                st.write("No new notifications.")
+            else:
+                for _, notif in notifications.iterrows():
+                    st.write(notif["message"])
+                    if st.button("Mark as Read", key=f"notif_{notif['id']}"):
+                        supabase.table("notifications").update({"read": True}).eq("id", notif["id"]).execute()
+                        st.rerun()
+    else:
+        with st.sidebar.expander("🔔 Notifications (0)"):
+            st.write("Notifications disabled (notifications table missing).")
 
     # Realtime setup
-    if st.sidebar.checkbox("Enable Auto-Refresh", value=True):
+    if st.sidebar.checkbox("Enable Auto-Refresh", value=False, disabled=True):
         setup_realtime(supabase)
-        if st.session_state.get("data_updated", False):
-            st.session_state.data_updated = False
-            st.rerun()
 
     st.sidebar.info(f"👤 Logged in as: {st.session_state.user}")
     st.sidebar.info(f"🎓 Role: {st.session_state.role}")
 
     # Company logo
-    st.image(r"./companylogo.png", width=150)
+    try:
+        st.image(r"./companylogo.png", width=150)
+    except Exception as e:
+        st.warning(f"Failed to load company logo: {str(e)}")
 
     if st.session_state.role == "Manager":
         st.title("📊 Manager Dashboard")
@@ -365,9 +390,6 @@ def main():
                 attendance = st.number_input("Attendance (%, min)", value=float(kpis.get('attendance', 95.0)), min_value=0.0, max_value=100.0)
                 quality_score = st.number_input("Quality Score (%, min)", value=float(kpis.get('quality_score', 90.0)), min_value=0.0, max_value=100.0)
                 product_knowledge = st.number_input("Product Knowledge (%, min)", value=float(kpis.get('product_knowledge', 85.0)), min_value=0.0, max_value=100.0)
-                contact_success_rate = st.number_input("Contact Success Rate (%, min)", value=float(kpis.get('contact_success_rate', 80.0)), min_value=0.0, max_value=100.0)
-                onboarding = st.number_input("Onboarding (%, min)", value=float(kpis.get('onboarding', 90.0)), min_value=0.0, max_value=100.0)
-                reporting = st.number_input("Reporting (%, min)", value=float(kpis.get('product_knowledge', 85.0)), min_value=0.0, max_value=100.0)
                 contact_success_rate = st.number_input("Contact Success Rate (%, min)", value=float(kpis.get('contact_success_rate', 80.0)), min_value=0.0, max_value=100.0)
                 onboarding = st.number_input("Onboarding (%, min)", value=float(kpis.get('onboarding', 90.0)), min_value=0.0, max_value=100.0)
                 reporting = st.number_input("Reporting (%, min)", value=float(kpis.get('reporting', 95.0)), min_value=0.0, max_value=100.0)
@@ -617,13 +639,13 @@ def main():
                             "agent_name": st.session_state.user,
                             "message": feedback_text
                         }).execute()
-                        # Notify managers
-                        managers = supabase.table("users").select("id").eq("role", "Manager").execute()
-                        for manager in managers.data:
-                            supabase.table("notifications").insert({
-                                "user_id": manager["id"],
-                                "message": f"New feedback from {st.session_state.user}: {feedback_text[:50]}..."
-                            }).execute()
+                        if st.session_state.get("notifications_enabled", False):
+                            managers = supabase.table("users").select("id").eq("role", "Manager").execute()
+                            for manager in managers.data:
+                                supabase.table("notifications").insert({
+                                    "user_id": manager["id"],
+                                    "message": f"New feedback from {st.session_state.user}: {feedback_text[:50]}..."
+                                }).execute()
                         st.success("Feedback submitted!")
                 
                 st.write("**Feedback History**")
