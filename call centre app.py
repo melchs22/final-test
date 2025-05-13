@@ -213,7 +213,7 @@ def main():
         st.write("""
         - **Login**: Use your name and password to log in.
         - **Managers**: Set KPIs, input performance data, and view assessments.
-        - **Agents**: View your performance metrics and history.
+        - **Agents**: View your performance metrics, history, goals, and submit feedback.
         - **Date Filter**: Use the date pickers to filter data.
         - **Trends**: Add performance data with multiple dates to see trends.
         """)
@@ -222,6 +222,8 @@ def main():
 
     if st.session_state.role == "Manager":
         st.title("📊 Manager Dashboard")
+        if st.button("🔄 Refresh Data"):
+            st.rerun()
         performance_df = get_performance(supabase)
         if not performance_df.empty:
             kpis = get_kpis(supabase)
@@ -371,14 +373,26 @@ def main():
             end_date = st.date_input("End Date", value=datetime.now().date())
         
         performance_df = get_performance(supabase, st.session_state.user)
-        if not performance_df.empty:
+        all_performance_df = get_performance(supabase)
+        if not performance_df.empty and not all_performance_df.empty:
             performance_df['date'] = pd.to_datetime(performance_df['date'])
+            all_performance_df['date'] = pd.to_datetime(all_performance_df['date'])
             masked_df = performance_df[(performance_df['date'] >= pd.to_datetime(start_date)) & 
                                      (performance_df['date'] <= pd.to_datetime(end_date))]
+            all_masked_df = all_performance_df[(all_performance_df['date'] >= pd.to_datetime(start_date)) & 
+                                            (all_performance_df['date'] <= pd.to_datetime(end_date))]
             kpis = get_kpis(supabase)
             results = assess_performance(masked_df, kpis)
+            all_results = assess_performance(all_masked_df, kpis)
             
             avg_overall_score = results['overall_score'].mean()
+            avg_metrics = results[[
+                'overall_score', 'quality_score', 'csat', 'attendance', 
+                'resolution_rate', 'contact_success_rate', 'aht', 
+                'talk_time'
+            ]].mean()
+            total_call_volume = results['call_volume'].sum()
+            
             if avg_overall_score < kpis.get('overall_score', 70.0):
                 st.warning("⚠️ Your average performance score is below the target. Please improve!")
             
@@ -428,6 +442,41 @@ def main():
                     labels={'Average': 'Score (%)'}
                 )
                 st.plotly_chart(fig2)
+                
+                st.subheader("📊 Comparison with Peers")
+                peer_avg = all_results.groupby('agent_name')['overall_score'].mean().reset_index()
+                peer_avg = peer_avg[peer_avg['agent_name'] != st.session_state.user]
+                fig3 = px.box(peer_avg, y='overall_score', title="Peer Overall Score Distribution",
+                             labels={'overall_score': 'Score (%)'}, points="all")
+                fig3.add_hline(y=avg_overall_score, line_dash="dash", line_color="red",
+                              annotation_text=f"Your Score: {avg_overall_score:.1f}%")
+                st.plotly_chart(fig3)
+                
+                st.subheader("🎯 Your Goals")
+                response = supabase.table("goals").select("*").eq("agent_name", st.session_state.user).execute()
+                goals_df = pd.DataFrame(response.data)
+                if not goals_df.empty:
+                    for _, row in goals_df.iterrows():
+                        current_value = results[results['date'] == max(results['date'])][row['metric']].mean() if row['metric'] in results.columns else 0.0
+                        progress = min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
+                        st.progress(int(progress))
+                        st.write(f"{row['metric'].replace('_', ' ').title()}: Target {row['target_value']:.1f}%, Current {current_value:.1f}%, Status: {row['status']}")
+                        if st.button(f"Update {row['metric']} Goal", key=row['id']):
+                            new_target = st.number_input(f"New Target for {row['metric']}", value=float(row['target_value']))
+                            supabase.table("goals").update({"target_value": new_target}).eq("id", row['id']).execute()
+                            st.success("Goal updated! (Pending manager approval)")
+                else:
+                    st.info("No goals set yet. Contact your manager to set goals.")
+                
+                st.subheader("💬 Submit Feedback")
+                with st.form("feedback_form"):
+                    feedback_text = st.text_area("Your Feedback or Suggestion")
+                    if st.form_submit_button("Submit Feedback"):
+                        supabase.table("feedback").insert({
+                            "agent_name": st.session_state.user,
+                            "message": feedback_text
+                        }).execute()
+                        st.success("Feedback submitted! A manager will review it soon.")
             except Exception as e:
                 st.error(f"Error plotting data: {str(e)}")
                 st.write("Raw data:")
