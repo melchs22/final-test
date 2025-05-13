@@ -128,39 +128,30 @@ def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=Non
 
         while True:
             query = supabase.table("zoho_agent_data").select("*").range(offset, offset + chunk_size - 1)
-
             if agent_name:
                 query = query.eq("ticket_owner", agent_name)
-
             response = query.execute()
-
             if not response.data:
                 break
-
             all_data.extend(response.data)
-
             if len(response.data) < chunk_size:
                 break
-
             offset += chunk_size
 
         if all_data:
             df = pd.DataFrame(all_data)
-
             if 'id' not in df.columns:
                 st.error("❌ The 'zoho_agent_data' table is missing an 'id' column, required for unique ticket counting.")
                 return pd.DataFrame()
             if 'ticket_owner' not in df.columns:
                 st.error("❌ The 'zoho_agent_data' table is missing a 'ticket_owner' column.")
                 return pd.DataFrame()
-
             st.write(f"✅ Supabase returned {len(df)} rows for agent: {agent_name or 'All'}")
             return df
         else:
             st.warning(f"⚠️ No Zoho agent data found for agent '{agent_name}'.")
             st.write("Debug: No rows returned from Supabase query.")
             return pd.DataFrame()
-
     except Exception as e:
         st.error(f"❌ Error retrieving Zoho agent data: {str(e)}")
         if "violates row-level security policy" in str(e):
@@ -569,7 +560,7 @@ def main():
             feedback_df = get_feedback(supabase)
             if not feedback_df.empty:
                 feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
-                feedback_df['response_timestamp'] = pd.to_datetime(feedback_df['response_timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                feedback_df['response_timestamp'] = pd.to_datetime(feedback_df['response_timestamp'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
                 display_columns = ['agent_name', 'message', 'created_at', 'manager_response', 'response_timestamp']
                 if 'updated_by' in feedback_df.columns:
                     display_columns.append('updated_by')
@@ -577,26 +568,31 @@ def main():
                 st.dataframe(feedback_df[display_columns])
                 st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="agent_feedback.csv")
 
-                st.subheader("Respond to Feedback")
+                st.subheader("Feedback Conversation")
                 feedback_df = feedback_df.sort_values(by='created_at', ascending=False)
                 latest_feedback = feedback_df.iloc[0] if not feedback_df.empty else None
 
                 st.markdown('<div class="feedback-container">', unsafe_allow_html=True)
                 for _, row in feedback_df.iterrows():
                     st.markdown('<div class="feedback-item">', unsafe_allow_html=True)
-                    st.write(f"**{row['agent_name']}** ({row['created_at']}): {row['message']}")
+                    st.markdown(f"**{row['agent_name']}** ({row['created_at']}): {row['message']}")
                     if pd.notnull(row['manager_response']):
-                        st.write(f"**Manager Response** ({row['response_timestamp']}): {row['manager_response']}")
-                    if st.button("Reply to this feedback", key=f"reply_{row['id']}"):
-                        st.session_state.reply_to_feedback_id = row['id']
+                        st.markdown(f"**Manager ({row['response_timestamp']}):** {row['manager_response']}")
+                    if row['id'] != (latest_feedback['id'] if latest_feedback is not None else None):
+                        if st.button("Reply", key=f"reply_{row['id']}"):
+                            st.session_state.reply_to_feedback_id = row['id']
                     st.markdown('</div>', unsafe_allow_html=True)
-
                 st.markdown('</div>', unsafe_allow_html=True)
 
                 with st.form("respond_feedback_form"):
                     if 'reply_to_feedback_id' in st.session_state:
                         feedback_id = st.session_state.reply_to_feedback_id
-                        st.write(f"Replying to feedback from {feedback_df[feedback_df['id'] == feedback_id]['agent_name'].iloc[0]}: {feedback_df[feedback_df['id'] == feedback_id]['message'].iloc[0][:50]}...")
+                        selected_feedback = feedback_df[feedback_df['id'] == feedback_id]
+                        if not selected_feedback.empty:
+                            st.write(f"Replying to {selected_feedback['agent_name'].iloc[0]}'s feedback: {selected_feedback['message'].iloc[0][:50]}...")
+                        else:
+                            st.warning("Selected feedback not found.")
+                            feedback_id = None
                     else:
                         feedback_id = latest_feedback['id'] if latest_feedback is not None else None
                         if feedback_id:
@@ -604,15 +600,19 @@ def main():
                         else:
                             st.write("No feedback available to reply to.")
                     manager_response = st.text_area("Your Response", key="manager_response")
-                    if st.form_submit_button("Submit Response"):
-                        if feedback_id and manager_response.strip():
-                            if respond_to_feedback(supabase, feedback_id, manager_response, st.session_state.user):
-                                st.success("Response submitted!")
-                                if 'reply_to_feedback_id' in st.session_state:
-                                    del st.session_state.reply_to_feedback_id
-                                st.rerun()
+                    col1, col2 = st.columns([3, 1])
+                    with col2:
+                        submit = st.form_submit_button("Send")
+                    if submit and feedback_id and manager_response.strip():
+                        if respond_to_feedback(supabase, feedback_id, manager_response, st.session_state.user):
+                            st.success("Response sent!")
+                            if 'reply_to_feedback_id' in st.session_state:
+                                del st.session_state.reply_to_feedback_id
+                            st.rerun()
                         else:
-                            st.error("Please provide a response and select a feedback to reply to.")
+                            st.error("Failed to send response.")
+                    elif submit:
+                        st.error("Please provide a response and ensure a feedback is selected.")
             else:
                 st.info("No feedback submitted.")
 
