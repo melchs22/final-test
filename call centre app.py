@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime
+import os
 from supabase import create_client, Client
 
 def init_supabase():
@@ -14,51 +14,41 @@ def init_supabase():
         return create_client(url, key)
     except Exception as e:
         st.error(f"Failed to connect to Supabase: {str(e)}")
+        if "Name or service not known" in str(e):
+            st.error("DNS resolution failed. Check that your Supabase URL is correct and that you have internet connectivity.")
+        elif "secrets" in str(e):
+            st.error("Could not access Supabase credentials in st.secrets. Make sure you've set up your .streamlit/secrets.toml file correctly.")
         raise e
 
 def check_db(supabase):
-    required_tables = ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications"]
-    critical_tables = ["users", "goals", "feedback", "performance"]
-    missing_critical = []
-    missing_non_critical = []
-    
-    for table in required_tables:
-        try:
-            supabase.table(table).select("count").limit(1).execute()
-        except Exception as e:
-            if 'relation' in str(e).lower() and 'does not exist' in str(e).lower():
-                if table in critical_tables:
-                    missing_critical.append(table)
-                else:
-                    missing_non_critical.append(table)
-            else:
-                st.sidebar.warning(f"Error accessing {table}: {str(e)}")
-    
-    if missing_critical:
-        st.sidebar.error(f"Critical tables missing: {', '.join(missing_critical)}. Please create them to use the app.")
-        return False
-    if missing_non_critical:
-        st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}. Some features (e.g., notifications) may be unavailable.")
-        if "notifications" in missing_non_critical:
-            st.session_state.notifications_enabled = False
-        else:
-            st.session_state.notifications_enabled = True
-    else:
-        st.session_state.notifications_enabled = True
+    try:
+        user_response = supabase.table("users").select("count").limit(1).execute()
+        kpi_response = supabase.table("kpis").select("count").limit(1).execute()
+        perf_response = supabase.table("performance").select("count").limit(1).execute()
+        zoho_response = supabase.table("zoho_agent_data").select("count").limit(1).execute()
+        goals_response = supabase.table("goals").select("count").limit(1).execute()
+        feedback_response = supabase.table("feedback").select("count").limit(1).execute()
         st.sidebar.success("✅ Connected to database successfully")
-    return True
+    except Exception as e:
+        st.sidebar.error(f"Database check error: {str(e)}")
+        st.sidebar.info("If tables don't exist, please run the SQL setup script in Supabase. Ensure RLS policies allow access.")
+
+def get_db_connection():
+    return init_supabase()
 
 def save_kpis(supabase, kpis):
     try:
         for metric, threshold in kpis.items():
             response = supabase.table("kpis").select("*").eq("metric", metric).execute()
-            if not response.data:
+            if len(response.data) == 0:
                 supabase.table("kpis").insert({"metric": metric, "threshold": threshold}).execute()
             else:
                 supabase.table("kpis").update({"threshold": threshold}).eq("metric", metric).execute()
         return True
     except Exception as e:
         st.error(f"Error saving KPIs: {str(e)}")
+        if "violates row-level security policy" in str(e):
+            st.error("You don't have permission to modify KPIs. Check your role or RLS policies.")
         return False
 
 def get_kpis(supabase):
@@ -68,7 +58,10 @@ def get_kpis(supabase):
         for row in response.data:
             metric = row["metric"]
             value = row["threshold"]
-            kpis[metric] = int(float(value)) if metric == "call_volume" else float(value) if value is not None else 0.0
+            if metric == "call_volume":
+                kpis[metric] = int(float(value)) if value is not None else 50
+            else:
+                kpis[metric] = float(value) if value is not None else 0.0
         return kpis
     except Exception as e:
         st.error(f"Error retrieving KPIs: {str(e)}")
@@ -76,7 +69,7 @@ def get_kpis(supabase):
 
 def save_performance(supabase, agent_name, data):
     try:
-        date = data.get('date', datetime.now().strftime("%Y-%m-%d"))
+        date = datetime.now().strftime("%Y-%m-%d")
         performance_data = {
             "agent_name": agent_name,
             "attendance": data['attendance'],
@@ -92,19 +85,20 @@ def save_performance(supabase, agent_name, data):
             "call_volume": data['call_volume'],
             "date": date
         }
-        supabase.table("performance").insert(performance_data).execute()
-        update_goal_status(supabase, agent_name)
+        response = supabase.table("performance").insert(performance_data).execute()
         return True
     except Exception as e:
         st.error(f"Error saving performance data: {str(e)}")
+        if "violates row-level security policy" in str(e):
+            st.error("You don't have permission to add performance data. Check your role or RLS policies.")
         return False
 
 def get_performance(supabase, agent_name=None):
     try:
-        query = supabase.table("performance").select("*")
         if agent_name:
-            query = query.eq("agent_name", agent_name)
-        response = query.execute()
+            response = supabase.table("performance").select("*").eq("agent_name", agent_name).execute()
+        else:
+            response = supabase.table("performance").select("*").execute()
         if response.data:
             df = pd.DataFrame(response.data)
             numeric_cols = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
@@ -115,34 +109,47 @@ def get_performance(supabase, agent_name=None):
             if 'call_volume' in df.columns:
                 df['call_volume'] = pd.to_numeric(df['call_volume'], errors='coerce').fillna(0).astype(int)
             return df
-        return pd.DataFrame()
+        else:
+            st.warning(f"No performance data found for {'agent ' + agent_name if agent_name else 'any agents'}.")
+            return pd.DataFrame()
     except Exception as e:
         st.error(f"Error retrieving performance data: {str(e)}")
+        if "violates row-level security policy" in str(e):
+            st.error("RLS policy is preventing data access. Ensure you have a policy allowing agents to view their own performance data.")
         return pd.DataFrame()
 
-def get_zoho_agent_data(supabase, agent_name=None):
+def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=None):
     try:
         query = supabase.table("zoho_agent_data").select("*")
         if agent_name:
             query = query.eq("ticket_owner", agent_name)
         response = query.execute()
+        
         if response.data:
             df = pd.DataFrame(response.data)
-            if 'id' not in df.columns or 'ticket_owner' not in df.columns:
-                st.error("Missing required columns in zoho_agent_data.")
+            if 'id' not in df.columns:
+                st.error("The 'zoho_agent_data' table is missing an 'id' column, which is required for unique ticket counting.")
+                return pd.DataFrame()
+            if 'ticket_owner' not in df.columns:
+                st.error("The 'zoho_agent_data' table is missing a 'ticket_owner' column.")
                 return pd.DataFrame()
             return df
-        st.warning(f"No Zoho data for {agent_name or 'any agents'}.")
-        st.write("Debug: No rows returned.")
-        return pd.DataFrame()
+        else:
+            st.warning(f"No Zoho agent data found for agent '{agent_name}'.")
+            st.write("Debug: No rows returned from Supabase query.")
+            return pd.DataFrame()
     except Exception as e:
-        st.error(f"Error retrieving Zoho data: {str(e)}")
+        st.error(f"Error retrieving Zoho agent data: {str(e)}")
+        if "violates row-level security policy" in str(e):
+            st.error("RLS policy is preventing data access. Ensure you have a policy allowing agents to view their own Zoho data.")
         return pd.DataFrame()
 
 def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
     try:
+        # Check if created_by column exists
         schema_check = supabase.table("goals").select("created_by").limit(1).execute()
         include_created_by = 'created_by' in schema_check.data[0] if schema_check.data else False
+        
         goal_data = {
             "agent_name": agent_name,
             "metric": metric,
@@ -151,6 +158,7 @@ def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
         }
         if include_created_by:
             goal_data["created_by"] = manager_name
+            
         response = supabase.table("goals").select("*").eq("agent_name", agent_name).eq("metric", metric).execute()
         if response.data:
             supabase.table("goals").update(goal_data).eq("agent_name", agent_name).eq("metric", metric).execute()
@@ -159,79 +167,52 @@ def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
         return True
     except Exception as e:
         st.error(f"Error setting goal: {str(e)}")
+        if "violates row-level security policy" in str(e):
+            st.error("You don't have permission to set goals. Check your role or RLS policies.")
+        elif "Could not find the 'created_by' column" in str(e):
+            st.error("The 'goals' table is missing the 'created_by' column. Please update the database schema.")
         return False
-
-def update_goal_status(supabase, agent_name):
-    try:
-        goals = supabase.table("goals").select("*").eq("agent_name", agent_name).execute()
-        perf = get_performance(supabase, agent_name)
-        if not goals.data or perf.empty:
-            return
-        latest_perf = perf[perf['date'] == perf['date'].max()]
-        for goal in goals.data:
-            metric = goal['metric']
-            target = goal['target_value']
-            if metric in latest_perf.columns:
-                value = latest_perf[metric].iloc[0]
-                status = "Achieved" if (metric == "aht" and value <= target) or (metric != "aht" and value >= target) else "Pending"
-                supabase.table("goals").update({"status": status}).eq("id", goal['id']).execute()
-    except Exception as e:
-        st.error(f"Error updating goal status: {str(e)}")
 
 def get_feedback(supabase, agent_name=None):
     try:
-        query = supabase.table("feedback").select("*")
         if agent_name:
-            query = query.eq("agent_name", agent_name)
-        response = query.execute()
+            response = supabase.table("feedback").select("*").eq("agent_name", agent_name).execute()
+        else:
+            response = supabase.table("feedback").select("*").execute()
         if response.data:
-            return pd.DataFrame(response.data)
-        st.warning(f"No feedback for {agent_name or 'any agents'}.")
-        return pd.DataFrame()
+            df = pd.DataFrame(response.data)
+            return df
+        else:
+            st.warning(f"No feedback found for {'agent ' + agent_name if agent_name else 'any agents'}.")
+            return pd.DataFrame()
     except Exception as e:
         st.error(f"Error retrieving feedback: {str(e)}")
+        if "violates row-level security policy" in str(e):
+            st.error("RLS policy is preventing data access. Ensure you have a policy allowing access to feedback data.")
         return pd.DataFrame()
 
 def respond_to_feedback(supabase, feedback_id, manager_response, manager_name):
     try:
+        # Check if updated_by column exists
         schema_check = supabase.table("feedback").select("updated_by").limit(1).execute()
         include_updated_by = 'updated_by' in schema_check.data[0] if schema_check.data else False
+        
         response_data = {
             "manager_response": manager_response,
             "response_timestamp": datetime.now().isoformat()
         }
         if include_updated_by:
             response_data["updated_by"] = manager_name
+            
         supabase.table("feedback").update(response_data).eq("id", feedback_id).execute()
-        if st.session_state.get("notifications_enabled", False):
-            feedback = supabase.table("feedback").select("agent_name").eq("id", feedback_id).execute()
-            if feedback.data:
-                agent_name = feedback.data[0]["agent_name"]
-                agent = supabase.table("users").select("id").eq("name", agent_name).execute()
-                if agent.data:
-                    supabase.table("notifications").insert({
-                        "user_id": agent.data[0]["id"],
-                        "message": f"Manager responded to your feedback: {manager_response[:50]}..."
-                    }).execute()
         return True
     except Exception as e:
         st.error(f"Error responding to feedback: {str(e)}")
+        if "violates row-level security policy" in str(e):
+            st.error("You don't have permission to respond to feedback. Check your role or RLS policies.")
+        elif "Could not find the 'updated_by' column" in str(e):
+            st.error("The 'feedback' table is missing the 'updated_by' column. Please update the database schema.")
         return False
-
-def get_notifications(supabase):
-    if not st.session_state.get("notifications_enabled", False):
-        return pd.DataFrame()
-    try:
-        user_response = supabase.table("users").select("id").eq("name", st.session_state.user).execute()
-        if not user_response.data:
-            st.warning("User not found in users table.")
-            return pd.DataFrame()
-        user_id = user_response.data[0]["id"]
-        response = supabase.table("notifications").select("*").eq("user_id", user_id).eq("read", False).execute()
-        return pd.DataFrame(response.data) if response.data else pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error retrieving notifications: {str(e)}")
-        return pd.DataFrame()
 
 def assess_performance(performance_df, kpis):
     if performance_df.empty:
@@ -241,7 +222,10 @@ def assess_performance(performance_df, kpis):
                'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'csat', 'call_volume']
     for metric in metrics:
         if metric in results.columns:
-            results[f'{metric}_pass'] = results[metric] <= kpis.get(metric, 600) if metric == 'aht' else results[metric] >= kpis.get(metric, 50)
+            if metric == 'aht':
+                results[f'{metric}_pass'] = results[metric] <= kpis.get(metric, 600)
+            else:
+                results[f'{metric}_pass'] = results[metric] >= kpis.get(metric, 50)
     pass_columns = [f'{m}_pass' for m in metrics if f'{m}_pass' in results.columns]
     if pass_columns:
         results['overall_score'] = results[pass_columns].mean(axis=1) * 100
@@ -252,59 +236,47 @@ def authenticate_user(supabase, name, password):
         user_response = supabase.table("users").select("*").eq("name", name).execute()
         if user_response.data:
             return True, name, user_response.data[0]["role"]
-        return False, None, None
+        else:
+            return False, None, None
     except Exception as e:
         st.error(f"Authentication error: {str(e)}")
         return False, None, None
 
-def setup_realtime(supabase):
-    st.warning("Real-time updates are disabled due to missing Realtime support. Data will not auto-refresh.")
-
 def main():
     st.set_page_config(page_title="Call Center Assessment System", layout="wide")
-    st.markdown("""
+    st.markdown(
+        """
         <style>
         .reportview-container {
-            background: linear-gradient(to right, #f0f4f8, #e0e7ff);
+            background-color: #f0f2f5;
         }
         .sidebar .sidebar-content {
             background-color: #ffffff;
-            border-right: 2px solid #4CAF50;
+            color: #333333;
         }
         .stButton>button {
             background-color: #4CAF50;
             color: white;
-            border-radius: 8px;
-            padding: 8px 16px;
-            transition: background-color 0.3s;
+            border-radius: 5px;
+            padding: 5px 15px;
         }
         .stButton>button:hover {
-            background-color: #388E3C;
+            background-color: #45a049;
+            color: white;
         }
-        h1, h2, h3 {
+        .stHeader {
+            font-size: 24px;
+            font-weight: bold;
             color: #2c3e50;
-            font-family: 'Arial', sans-serif;
-        }
-        .stMetric {
-            background-color: #ffffff;
-            padding: 10px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .progress-bar {
-            height: 20px;
-            border-radius: 5px;
         }
         </style>
-    """, unsafe_allow_html=True)
-
+        """,
+        unsafe_allow_html=True
+    )
+    
     try:
         supabase = init_supabase()
-        if not check_db(supabase):
-            st.error("Critical database tables are missing. Please check the sidebar for details.")
-            st.stop()
-        global auth
-        auth = supabase.auth
+        check_db(supabase)
     except Exception as e:
         st.error(f"Failed to connect to Supabase: {str(e)}")
         st.stop()
@@ -312,15 +284,14 @@ def main():
     if 'user' not in st.session_state:
         st.session_state.user = None
         st.session_state.role = None
-        st.session_state.data_updated = False
-        st.session_state.notifications_enabled = False
 
     if not st.session_state.user:
         st.title("🔐 Login")
         with st.form("login_form"):
             name = st.text_input("Name")
             password = st.text_input("Password", type="password")
-            if st.form_submit_button("Login"):
+            submit = st.form_submit_button("Login")
+            if submit:
                 success, user, role = authenticate_user(supabase, name, password)
                 if success:
                     st.session_state.user = user
@@ -328,51 +299,37 @@ def main():
                     st.success(f"Logged in as {user} ({role})")
                     st.rerun()
                 else:
-                    st.error("Invalid credentials.")
+                    st.error("Login failed. Invalid credentials or user not found.")
+        st.info("Note: For production, you should use Supabase Authentication which provides secure user management.")
         return
 
     if st.sidebar.button("Logout"):
         st.session_state.user = None
         st.session_state.role = None
         st.rerun()
-
-    # Notifications
-    if st.session_state.get("notifications_enabled", False):
-        notifications = get_notifications(supabase)
-        with st.sidebar.expander(f"🔔 Notifications ({len(notifications)})"):
-            if notifications.empty:
-                st.write("No new notifications.")
-            else:
-                for _, notif in notifications.iterrows():
-                    st.write(notif["message"])
-                    if st.button("Mark as Read", key=f"notif_{notif['id']}"):
-                        supabase.table("notifications").update({"read": True}).eq("id", notif["id"]).execute()
-                        st.rerun()
-    else:
-        with st.sidebar.expander("🔔 Notifications (0)"):
-            st.write("Notifications disabled (notifications table missing).")
-
-    # Realtime setup
-    if st.sidebar.checkbox("Enable Auto-Refresh", value=False, disabled=True):
-        setup_realtime(supabase)
-
+    
+    with st.sidebar.expander("ℹ️ Help & Instructions"):
+        st.write("""
+        - **Login**: Use your name and password to log in.
+        - **Managers**: Set KPIs, input performance data, view assessments, set agent goals, view/respond to feedback.
+        - **Agents**: View your performance metrics, history, goals, Zoho ticket data, submit feedback, and view manager responses.
+        - **Date Filter**: Use the date pickers to filter performance data.
+        - **Trends**: Add performance data with multiple dates to see trends.
+        """)
     st.sidebar.info(f"👤 Logged in as: {st.session_state.user}")
     st.sidebar.info(f"🎓 Role: {st.session_state.role}")
 
-    # Company logo
-    try:
-        st.image(r"./companylogo.png", width=150)
-    except Exception as e:
-        st.warning(f"Failed to load company logo: {str(e)}")
-
     if st.session_state.role == "Manager":
         st.title("📊 Manager Dashboard")
+        if st.button("🔄 Refresh Data"):
+            st.rerun()
         performance_df = get_performance(supabase)
         if not performance_df.empty:
             kpis = get_kpis(supabase)
             results = assess_performance(performance_df, kpis)
             avg_overall_score = results['overall_score'].mean()
             total_call_volume = performance_df['call_volume'].sum()
+            
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Avg Overall Score", f"{avg_overall_score:.1f}%")
@@ -380,7 +337,7 @@ def main():
                 st.metric("Total Call Volume", f"{total_call_volume}")
             with col3:
                 st.metric("Agent Count", len(results['agent_name'].unique()))
-        tabs = st.tabs(["📋 Set KPIs", "📝 Input Performance", "📊 Assessments", "🎯 Set Goals", "💬 Feedback"])
+        tabs = st.tabs(["Set KPIs", "Input Performance", "View Assessments", "Set Agent Goals", "View Feedback"])
 
         with tabs[0]:
             st.header("📋 Set KPI Thresholds")
@@ -399,58 +356,64 @@ def main():
                 call_volume = st.number_input("Call Volume (calls, min)", value=int(kpis.get('call_volume', 50)), min_value=0)
                 if st.form_submit_button("Save KPIs"):
                     new_kpis = {
-                        'attendance': attendance, 'quality_score': quality_score, 'product_knowledge': product_knowledge,
-                        'contact_success_rate': contact_success_rate, 'onboarding': onboarding, 'reporting': reporting,
-                        'talk_time': talk_time, 'resolution_rate': resolution_rate, 'aht': aht, 'csat': csat,
+                        'attendance': attendance,
+                        'quality_score': quality_score,
+                        'product_knowledge': product_knowledge,
+                        'contact_success_rate': contact_success_rate,
+                        'onboarding': onboarding,
+                        'reporting': reporting,
+                        'talk_time': talk_time,
+                        'resolution_rate': resolution_rate,
+                        'aht': aht,
+                        'csat': csat,
                         'call_volume': call_volume
                     }
                     if save_kpis(supabase, new_kpis):
-                        st.success("KPIs saved!")
+                        st.success("KPIs saved successfully!")
+                    else:
+                        st.error("Failed to save KPIs. Check your permissions.")
 
         with tabs[1]:
             st.header("📝 Input Agent Performance")
-            agents = [user["name"] for user in supabase.table("users").select("*").eq("role", "Agent").execute().data]
-            if not agents:
-                st.warning("No agents found.")
-            else:
-                with st.form("performance_form"):
-                    agent = st.selectbox("Select Agent", agents)
-                    attendance = st.number_input("Attendance (%)", min_value=0.0, max_value=100.0)
-                    quality_score = st.number_input("Quality Score (%)", min_value=0.0, max_value=100.0)
-                    product_knowledge = st.number_input("Product Knowledge (%)", min_value=0.0, max_value=100.0)
-                    contact_success_rate = st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0)
-                    onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0)
-                    reporting = st.number_input("Reporting (%)", min_value=0.0, max_value=100.0)
-                    talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)
-                    resolution_rate = st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0)
-                    aht = st.number_input("Average Handle Time (seconds)", min_value=0.0)
-                    csat = st.number_input("Customer Satisfaction (%)", min_value=0.0, max_value=100.0)
-                    call_volume = st.number_input("Call Volume (calls)", min_value=0)
-                    if st.form_submit_button("Submit Performance"):
-                        data = {
-                            'attendance': attendance, 'quality_score': quality_score, 'product_knowledge': product_knowledge,
-                            'contact_success_rate': contact_success_rate, 'onboarding': onboarding, 'reporting': reporting,
-                            'talk_time': talk_time, 'resolution_rate': resolution_rate, 'aht': aht, 'csat': csat,
-                            'call_volume': call_volume
-                        }
-                        if save_performance(supabase, agent, data):
-                            st.success(f"Performance saved for {agent}!")
-            
-            st.subheader("Upload Performance Data")
-            uploaded_file = st.file_uploader("Upload CSV", type="csv")
-            if uploaded_file:
-                df = pd.read_csv(uploaded_file)
-                required_cols = ['agent_name', 'attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
-                                'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat', 'call_volume']
-                if all(col in df.columns for col in required_cols):
-                    for _, row in df.iterrows():
-                        data = {col: row[col] for col in required_cols[1:]}
-                        if 'date' in row:
-                            data['date'] = row['date']
-                        save_performance(supabase, row['agent_name'], data)
-                    st.success(f"Imported data for {len(df)} agents!")
+            try:
+                response = supabase.table("users").select("*").eq("role", "Agent").execute()
+                agents = [user["name"] for user in response.data]
+                if not agents:
+                    st.warning("No agents found in the system. Please add agents in the Supabase dashboard.")
                 else:
-                    st.error("CSV missing required columns.")
+                    with st.form("performance_form"):
+                        agent = st.selectbox("Select Agent", agents)
+                        attendance = st.number_input("Attendance (%)", min_value=0.0, max_value=100.0)
+                        quality_score = st.number_input("Quality Score (%)", min_value=0.0, max_value=100.0)
+                        product_knowledge = st.number_input("Product Knowledge (%)", min_value=0.0, max_value=100.0)
+                        contact_success_rate = st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0)
+                        onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0)
+                        reporting = st.number_input("Reporting (%)", min_value=0.0, max_value=100.0)
+                        talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)
+                        resolution_rate = st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0)
+                        aht = st.number_input("Average Handle Time (seconds)", min_value=0.0)
+                        csat = st.number_input("Customer Satisfaction (%)", min_value=0.0, max_value=100.0)
+                        call_volume = st.number_input("Call Volume (calls)", min_value=0)
+                        if st.form_submit_button("Submit Performance"):
+                            data = {
+                                'attendance': attendance,
+                                'quality_score': quality_score,
+                                'product_knowledge': product_knowledge,
+                                'contact_success_rate': contact_success_rate,
+                                'onboarding': onboarding,
+                                'reporting': reporting,
+                                'talk_time': talk_time,
+                                'resolution_rate': resolution_rate,
+                                'aht': aht,
+                                'csat': csat,
+                                'call_volume': call_volume
+                            }
+                            if save_performance(supabase, agent, data):
+                                st.success(f"Performance data saved for {agent}!")
+                            else:
+                                st.error("Failed to save performance data. Check your permissions.")
+            except Exception as e:
+                st.error(f"Error loading agents: {str(e)}")
 
         with tabs[2]:
             st.header("📊 Assessment Results")
@@ -459,6 +422,8 @@ def main():
                 start_date = st.date_input("Start Date", value=pd.to_datetime('2025-05-01'))
             with col2:
                 end_date = st.date_input("End Date", value=datetime.now().date())
+            
+            performance_df = get_performance(supabase)
             if not performance_df.empty:
                 performance_df['date'] = pd.to_datetime(performance_df['date'])
                 masked_df = performance_df[(performance_df['date'] >= pd.to_datetime(start_date)) & 
@@ -466,54 +431,76 @@ def main():
                 kpis = get_kpis(supabase)
                 results = assess_performance(masked_df, kpis)
                 st.dataframe(results)
-                st.download_button(label="📥 Download Data", data=results.to_csv(index=False), file_name="performance_data.csv")
+                st.download_button(
+                    label="📥 Download Data as CSV",
+                    data=results.to_csv(index=False),
+                    file_name="performance_data.csv",
+                    mime="text/csv"
+                )
+                st.subheader("📈 Performance Overview")
                 try:
                     fig = px.bar(results, x='agent_name', y='overall_score', color='agent_name', 
-                                title="Agent Overall Scores", labels={'overall_score': 'Score (%)'})
+                                title="Agent Overall Scores", labels={'overall_score': 'Score (%)'},
+                                hover_data=['quality_score', 'csat', 'attendance'])
+                    fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                     st.plotly_chart(fig)
+                    
+                    if 'date' in results.columns:
+                        st.subheader("📉 Performance Trends")
+                        dates = sorted(results['date'].unique())
+                        if len(dates) > 1:
+                            fig2 = px.line(results, x='date', y='overall_score', color='agent_name',
+                                          title="Score Trends Over Time", labels={'overall_score': 'Score (%)'})
+                            st.plotly_chart(fig2)
+                        else:
+                            st.info("Performance trends require data from multiple dates. Please add more performance records with different dates.")
                 except Exception as e:
                     st.error(f"Error plotting data: {str(e)}")
 
         with tabs[3]:
             st.header("🎯 Set Agent Goals")
-            if not agents:
-                st.warning("No agents found.")
-            else:
-                with st.form("set_goals_form"):
-                    agent = st.selectbox("Select Agent", agents, key="single_goal")
-                    metric = st.selectbox("Metric", ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
-                                                    'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat',
-                                                    'call_volume', 'overall_score'], key="single_metric")
-                    target_value = st.number_input("Target Value", min_value=0.0, value=80.0, key="single_target")
-                    if st.form_submit_button("Set Goal"):
-                        if set_agent_goal(supabase, agent, metric, target_value, st.session_state.user):
-                            st.success(f"Goal set for {agent}!")
-                
-                st.subheader("Bulk Set Goals")
-                with st.form("bulk_goals_form"):
-                    bulk_agents = st.multiselect("Select Agents", agents, key="bulk_agents")
-                    bulk_metric = st.selectbox("Metric", ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
-                                                        'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat',
-                                                        'call_volume', 'overall_score'], key="bulk_metric")
-                    bulk_target = st.number_input("Target Value", min_value=0.0, value=80.0, key="bulk_target")
-                    if st.form_submit_button("Set Bulk Goals"):
-                        for agent in bulk_agents:
-                            set_agent_goal(supabase, agent, bulk_metric, bulk_target, st.session_state.user)
-                        st.success(f"Goals set for {len(bulk_agents)} agents!")
-                
-                st.subheader("Current Goals")
-                goals_df = supabase.table("goals").select("*").in_("agent_name", agents).execute()
-                if goals_df.data:
-                    goals_display_df = pd.DataFrame(goals_df.data)
-                    goals_display_df['target_value'] = goals_display_df.apply(
-                        lambda x: f"{x['target_value']:.1f}{' sec' if x['metric'] == 'aht' else ''}", axis=1)
-                    display_columns = ['agent_name', 'metric', 'target_value', 'status', 'created_at']
-                    if 'created_by' in goals_display_df.columns:
-                        display_columns.insert(4, 'created_by')
-                    st.dataframe(goals_display_df[display_columns])
-                    st.download_button(label="📥 Download Goals", data=goals_display_df.to_csv(index=False), file_name="agent_goals.csv")
+            try:
+                response = supabase.table("users").select("*").eq("role", "Agent").execute()
+                agents = [user["name"] for user in response.data]
+                if not agents:
+                    st.warning("No agents found in the system. Please add agents in the Supabase dashboard.")
                 else:
-                    st.info("No goals set.")
+                    with st.form("set_goals_form"):
+                        agent = st.selectbox("Select Agent", agents)
+                        metric = st.selectbox("Select Metric", [
+                            'attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
+                            'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat',
+                            'call_volume', 'overall_score'
+                        ])
+                        target_value = st.number_input("Target Value", min_value=0.0, value=80.0)
+                        if st.form_submit_button("Set Goal"):
+                            if set_agent_goal(supabase, agent, metric, target_value, st.session_state.user):
+                                st.success(f"Goal set for {agent} on {metric}!")
+                            else:
+                                st.error("Failed to set goal. Check your permissions or database schema.")
+                    
+                    st.subheader("Current Goals")
+                    goals_df = supabase.table("goals").select("*").in_("agent_name", agents).execute()
+                    if goals_df.data:
+                        goals_display_df = pd.DataFrame(goals_df.data)
+                        goals_display_df['target_value'] = goals_display_df['target_value'].apply(
+                            lambda x: f"{x:.1f}{' sec' if goals_display_df.loc[goals_display_df['target_value'] == x, 'metric'].iloc[0] == 'aht' else ''}"
+                        )
+                        display_columns = ['agent_name', 'metric', 'target_value', 'status']
+                        if 'created_by' in goals_display_df.columns:
+                            display_columns.append('created_by')
+                        display_columns.append('created_at')
+                        st.dataframe(goals_display_df[display_columns])
+                        st.download_button(
+                            label="📥 Download Goals as CSV",
+                            data=goals_display_df.to_csv(index=False),
+                            file_name="agent_goals.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.info("No goals set for any agents yet.")
+            except Exception as e:
+                st.error(f"Error loading agents or goals: {str(e)}")
 
         with tabs[4]:
             st.header("💬 View and Respond to Agent Feedback")
@@ -523,88 +510,176 @@ def main():
                 if 'updated_by' in feedback_df.columns:
                     display_columns.append('updated_by')
                 st.dataframe(feedback_df[display_columns])
+                st.subheader("Respond to Feedback")
                 with st.form("respond_feedback_form"):
-                    feedback_id = st.selectbox("Select Feedback", options=feedback_df['id'],
-                                             format_func=lambda x: f"{feedback_df[feedback_df['id'] == x]['agent_name'].iloc[0]}: {feedback_df[feedback_df['id'] == x]['message'].iloc[0][:50]}...")
+                    feedback_id = st.selectbox(
+                        "Select Feedback to Respond",
+                        options=feedback_df['id'],
+                        format_func=lambda x: f"{feedback_df[feedback_df['id'] == x]['agent_name'].iloc[0]}: {feedback_df[feedback_df['id'] == x]['message'].iloc[0][:50]}..."
+                    )
                     manager_response = st.text_area("Your Response")
                     if st.form_submit_button("Submit Response"):
                         if respond_to_feedback(supabase, feedback_id, manager_response, st.session_state.user):
-                            st.success("Response submitted!")
+                            st.success("Response submitted successfully!")
                             st.rerun()
-                st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="agent_feedback.csv")
+                        else:
+                            st.error("Failed to submit response. Check your permissions or database schema.")
+                st.download_button(
+                    label="📥 Download Feedback as CSV",
+                    data=feedback_df.to_csv(index=False),
+                    file_name="agent_feedback.csv",
+                    mime="text/csv"
+                )
             else:
-                st.info("No feedback submitted.")
+                st.info("No feedback submitted by agents yet.")
 
     elif st.session_state.role == "Agent":
         st.title(f"👤 Agent Dashboard - {st.session_state.user}")
         if st.session_state.user == "Joseph Kavuma":
             try:
                 st.image("Joseph.jpg", caption="Agent Profile", width=150)
-            except:
-                st.error("Error loading profile image.")
+            except Exception as e:
+                st.error(f"Error loading image: {str(e)}")
         
-        tabs = st.tabs(["📋 Metrics", "🎯 Goals", "💬 Feedback", "📊 Tickets"])
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("Start Date (Performance Data)", value=pd.to_datetime('2025-05-01'))
+        with col2:
+            end_date = st.date_input("End Date (Performance Data)", value=datetime.now().date())
+        
         performance_df = get_performance(supabase, st.session_state.user)
         all_performance_df = get_performance(supabase)
         zoho_df = get_zoho_agent_data(supabase, st.session_state.user)
-
-        with tabs[0]:
-            with st.expander("📈 Performance Metrics"):
-                if not performance_df.empty and not all_performance_df.empty:
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        start_date = st.date_input("Start Date", value=pd.to_datetime('2025-05-01'), key="agent_start")
-                    with col2:
-                        end_date = st.date_input("End Date", value=datetime.now().date(), key="agent_end")
-                    performance_df['date'] = pd.to_datetime(performance_df['date'])
-                    all_performance_df['date'] = pd.to_datetime(all_performance_df['date'])
-                    masked_df = performance_df[(performance_df['date'] >= pd.to_datetime(start_date)) & 
-                                             (performance_df['date'] <= pd.to_datetime(end_date))]
-                    all_masked_df = all_performance_df[(all_performance_df['date'] >= pd.to_datetime(start_date)) & 
-                                                     (all_performance_df['date'] <= pd.to_datetime(end_date))]
-                    kpis = get_kpis(supabase)
-                    results = assess_performance(masked_df, kpis)
-                    all_results = assess_performance(all_masked_df, kpis)
-                    avg_overall_score = results['overall_score'].mean()
-                    avg_metrics = results[['overall_score', 'quality_score', 'csat', 'attendance', 
-                                         'resolution_rate', 'contact_success_rate', 'aht', 'talk_time']].mean()
-                    total_call_volume = results['call_volume'].sum()
-                    
-                    if avg_overall_score > 90:
-                        st.markdown('<span style="color: gold; font-weight: bold;">🏆 Top Performer</span>', unsafe_allow_html=True)
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Overall Score", f"{avg_metrics['overall_score']:.1f}%")
-                        st.metric("Quality Score", f"{avg_metrics['quality_score']:.1f}%")
-                        st.metric("Customer Satisfaction", f"{avg_metrics['csat']:.1f}%")
-                    with col2:
-                        st.metric("Attendance", f"{avg_metrics['attendance']:.1f}%")
-                        st.metric("Resolution Rate", f"{avg_metrics['resolution_rate']:.1f}%")
-                        st.metric("Contact Success", f"{avg_metrics['contact_success_rate']:.1f}%")
-                    with col3:
-                        st.metric("Average Handle Time", f"{avg_metrics['aht']:.1f} sec")
-                        st.metric("Talk Time", f"{avg_metrics['talk_time']:.1f} sec")
-                        st.metric("Call Volume", f"{total_call_volume:.0f} calls")
-                    
-                    st.subheader("Performance Profile")
-                    metrics = ['quality_score', 'csat', 'attendance', 'resolution_rate']
-                    values = [results[m].mean() for m in metrics]
-                    fig = go.Figure(data=go.Scatterpolar(r=values, theta=[m.replace('_', ' ').title() for m in metrics], fill='toself'))
-                    fig.update_layout(title="Your Performance Profile", polar=dict(radialaxis=dict(visible=True, range=[0, 100])))
+        
+        if not performance_df.empty and not all_performance_df.empty:
+            performance_df['date'] = pd.to_datetime(performance_df['date'])
+            all_performance_df['date'] = pd.to_datetime(all_performance_df['date'])
+            masked_df = performance_df[(performance_df['date'] >= pd.to_datetime(start_date)) & 
+                                     (performance_df['date'] <= pd.to_datetime(end_date))]
+            all_masked_df = all_performance_df[(all_performance_df['date'] >= pd.to_datetime(start_date)) & 
+                                              (all_performance_df['date'] <= pd.to_datetime(end_date))]
+            kpis = get_kpis(supabase)
+            results = assess_performance(masked_df, kpis)
+            all_results = assess_performance(all_masked_df, kpis)
+            
+            avg_overall_score = results['overall_score'].mean()
+            avg_metrics = results[[
+                'overall_score', 'quality_score', 'csat', 'attendance', 
+                'resolution_rate', 'contact_success_rate', 'aht', 
+                'talk_time'
+            ]].mean()
+            total_call_volume = results['call_volume'].sum()
+            
+            if avg_overall_score < kpis.get('overall_score', 70.0):
+                st.warning("⚠️ Your average performance score is below the target. Please improve!")
+            
+            st.subheader("📋 Your Performance Metrics (Averages)")
+            col1, col2, col3 = st.columns(3, gap="medium")
+            with col1:
+                st.metric("Overall Score", f"{avg_metrics['overall_score']:.1f}%")
+                st.metric("Quality Score", f"{avg_metrics['quality_score']:.1f}%")
+                st.metric("Customer Satisfaction", f"{avg_metrics['csat']:.1f}%")
+            with col2:
+                st.metric("Attendance", f"{avg_metrics['attendance']:.1f}%")
+                st.metric("Resolution Rate", f"{avg_metrics['resolution_rate']:.1f}%")
+                st.metric("Contact Success", f"{avg_metrics['contact_success_rate']:.1f}%")
+            with col3:
+                st.metric("Average Handle Time", f"{avg_metrics['aht']:.1f} sec")
+                st.metric("Talk Time", f"{avg_metrics['talk_time']:.1f} sec")
+                st.metric("Call Volume", f"{total_call_volume:.0f} calls")
+            
+            st.subheader("📊 Your Zoho Agent Data Summary")
+            if not zoho_df.empty:
+                total_tickets = zoho_df['id'].nunique()
+                st.metric("Total Tickets Handled", f"{total_tickets}")
+                
+                with st.expander("Debug: Raw Zoho Data"):
+                    st.write(f"Logged-in user: {st.session_state.user}")
+                    st.write(f"Unique ticket_owner values in data: {zoho_df['ticket_owner'].unique()}")
+                    st.write(f"Total rows retrieved: {len(zoho_df)}")
+                    st.write(f"Unique ticket IDs: {zoho_df['id'].nunique()}")
+                    st.dataframe(zoho_df)
+                
+                st.write("**Ticket Breakdown by Channel**")
+                channel_counts = zoho_df.groupby('channel')['id'].nunique().reset_index()
+                channel_counts.columns = ['Channel', 'Ticket Count']
+                st.dataframe(channel_counts)
+                
+                st.write("**Ticket Breakdown by Category**")
+                category_counts = zoho_df.groupby('ticket_category')['id'].nunique().reset_index()
+                category_counts.columns = ['Category', 'Ticket Count']
+                st.dataframe(category_counts)
+                
+                st.write("**Ticket Breakdown by Subcategory**")
+                subcategory_counts = zoho_df.groupby('ticket_subcategory')['id'].nunique().reset_index()
+                subcategory_counts.columns = ['Subcategory', 'Ticket Count']
+                st.dataframe(subcategory_counts)
+                
+                try:
+                    fig = px.pie(channel_counts, values='Ticket Count', names='Channel', 
+                                title="Ticket Distribution by Channel")
                     st.plotly_chart(fig)
-                    
-                    st.subheader("Comparison to Peers")
-                    peer_avg = all_results.groupby('agent_name')['overall_score'].mean().reset_index()
-                    peer_avg = peer_avg[peer_avg['agent_name'] != st.session_state.user]
-                    fig3 = px.box(peer_avg, y='overall_score', title="Peer Score Distribution", labels={'overall_score': 'Score (%)'}, points="all")
-                    fig3.add_hline(y=avg_overall_score, line_dash="dash", line_color="red", annotation_text=f"Your Score: {avg_overall_score:.1f}%")
-                    st.plotly_chart(fig3)
-                else:
-                    st.info("No performance data available.")
-
-        with tabs[1]:
-            with st.expander("🎯 Your Goals"):
+                except Exception as e:
+                    st.error(f"Error plotting ticket distribution: {str(e)}")
+                
+                st.download_button(
+                    label="📥 Download Zoho Data as CSV",
+                    data=zoho_df.to_csv(index=False),
+                    file_name="zoho_agent_data.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("No Zoho agent data available.")
+                st.write("Debug: Check the following:")
+                st.write(f"- Ensure data exists for '{st.session_state.user}' in the 'zoho_agent_data' table.")
+                st.write("- Verify the 'ticket_owner' column matches your name exactly (case-sensitive, no extra spaces).")
+                st.write("- Confirm the 'id' column exists and contains unique ticket identifiers.")
+                st.write("- Check RLS policies allow access to your data.")
+                st.write("- Run this SQL in Supabase to verify data:")
+                st.code(f"SELECT COUNT(DISTINCT id) FROM zoho_agent_data WHERE ticket_owner = '{st.session_state.user}';")
+            
+            st.subheader("📋 Your Performance History")
+            st.dataframe(results)
+            
+            try:
+                st.subheader("📈 Your Score Over Time (Monthly)")
+                results['date'] = pd.to_datetime(results['date'])
+                results['year_month'] = results['date'].dt.to_period('M').astype(str)
+                monthly_scores = results.groupby('year_month')['overall_score'].mean().reset_index()
+                fig = px.line(
+                    monthly_scores, 
+                    x='year_month', 
+                    y='overall_score', 
+                    title="Your Monthly Score Trend",
+                    labels={'overall_score': 'Score (%)', 'year_month': 'Month'}
+                )
+                st.plotly_chart(fig)
+                
+                st.subheader("📊 Performance by Category (Averages)")
+                metrics_df = results[[
+                    'quality_score', 'attendance', 'resolution_rate', 
+                    'product_knowledge', 'contact_success_rate'
+                ]].mean().reset_index()
+                metrics_df.columns = ['Metric', 'Average']
+                fig2 = px.bar(
+                    metrics_df, 
+                    x='Metric', 
+                    y='Average', 
+                    title="Your Average Metrics",
+                    labels={'Average': 'Score (%)'}
+                )
+                st.plotly_chart(fig2)
+                
+                st.subheader("📊 Comparison with Peers")
+                peer_avg = all_results.groupby('agent_name')['overall_score'].mean().reset_index()
+                peer_avg = peer_avg[peer_avg['agent_name'] != st.session_state.user]
+                fig3 = px.box(peer_avg, y='overall_score', title="Peer Overall Score Distribution",
+                             labels={'overall_score': 'Score (%)'}, points="all")
+                fig3.add_hline(y=avg_overall_score, line_dash="dash", line_color="red",
+                              annotation_text=f"Your Score: {avg_overall_score:.1f}%")
+                st.plotly_chart(fig3)
+                
+                st.subheader("🎯 Your Goals")
                 all_metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
                               'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat',
                               'call_volume', 'overall_score']
@@ -616,38 +691,32 @@ def main():
                         if not goal_row.empty:
                             row = goal_row.iloc[0]
                             current_value = results[results['date'] == max(results['date'])][metric].mean() if metric in results.columns else 0.0
-                            progress = min((kpis.get(metric, 600) - current_value) / (kpis.get(metric, 600) - row['target_value']) * 100, 100) if metric == 'aht' else min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
-                            color = "green" if progress >= 80 else "orange" if progress >= 50 else "red"
-                            st.markdown(f"<div class='progress-bar' style='background-color: {color}; width: {progress}%;'></div>", unsafe_allow_html=True)
+                            if metric == 'aht':
+                                progress = min((kpis.get(metric, 600) - current_value) / (kpis.get(metric, 600) - row['target_value']) * 100, 100) if kpis.get(metric, 600) > row['target_value'] else 0
+                            else:
+                                progress = min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
+                            st.progress(int(progress))
                             st.write(f"{metric.replace('_', ' ').title()}: Target {row['target_value']:.1f}{' sec' if metric == 'aht' else '%'}, Current {current_value:.1f}{' sec' if metric == 'aht' else '%'}, Status: {row['status']}")
                             if st.button(f"Update {metric} Goal", key=f"update_{metric}"):
                                 new_target = st.number_input(f"New Target for {metric}", value=float(row['target_value']))
                                 supabase.table("goals").update({"target_value": new_target}).eq("id", row['id']).execute()
-                                st.success("Goal updated! (Pending approval)")
+                                st.success("Goal updated! (Pending manager approval)")
                         else:
-                            st.write(f"No goal set for {metric.replace('_', ' ').title()}.")
+                            st.write(f"No goal set for {metric.replace('_', ' ').title()}. Contact your manager to set it.")
                 else:
-                    st.info("No goals set.")
-
-        with tabs[2]:
-            with st.expander("💬 Feedback and Responses"):
+                    st.info("No goals set yet. Contact your manager to set goals for all metrics.")
+                
+                st.subheader("💬 Feedback and Responses")
                 with st.form("feedback_form"):
-                    feedback_text = st.text_area("Submit Feedback")
+                    feedback_text = st.text_area("Submit Your Feedback or Suggestion")
                     if st.form_submit_button("Submit Feedback"):
                         supabase.table("feedback").insert({
                             "agent_name": st.session_state.user,
                             "message": feedback_text
                         }).execute()
-                        if st.session_state.get("notifications_enabled", False):
-                            managers = supabase.table("users").select("id").eq("role", "Manager").execute()
-                            for manager in managers.data:
-                                supabase.table("notifications").insert({
-                                    "user_id": manager["id"],
-                                    "message": f"New feedback from {st.session_state.user}: {feedback_text[:50]}..."
-                                }).execute()
-                        st.success("Feedback submitted!")
+                        st.success("Feedback submitted! A manager will review it soon.")
                 
-                st.write("**Feedback History**")
+                st.write("**Your Feedback History**")
                 feedback_df = get_feedback(supabase, st.session_state.user)
                 if not feedback_df.empty:
                     feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
@@ -656,34 +725,24 @@ def main():
                     if 'updated_by' in feedback_df.columns:
                         display_columns.append('updated_by')
                     st.dataframe(feedback_df[display_columns])
-                    st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="feedback_history.csv")
+                    st.download_button(
+                        label="📥 Download Feedback History as CSV",
+                        data=feedback_df.to_csv(index=False),
+                        file_name="feedback_history.csv",
+                        mime="text/csv"
+                    )
                 else:
-                    st.info("No feedback submitted.")
-
-        with tabs[3]:
-            with st.expander("📊 Zoho Ticket Data"):
-                if not zoho_df.empty:
-                    total_tickets = zoho_df['id'].nunique()
-                    st.metric("Total Tickets Handled", f"{total_tickets}")
-                    show_debug = st.checkbox("Show Debug: Raw Zoho Data")
-                    if show_debug:
-                        st.write(f"Logged-in user: {st.session_state.user}")
-                        st.write(f"Unique ticket_owner values: {zoho_df['ticket_owner'].unique()}")
-                        st.write(f"Total rows: {len(zoho_df)}")
-                        st.write(f"Unique ticket IDs: {zoho_df['id'].nunique()}")
-                        st.dataframe(zoho_df)
-                    channel_counts = zoho_df.groupby('channel')['id'].nunique().reset_index(name='Ticket Count')
-                    st.write("**Ticket Breakdown by Channel**")
-                    st.dataframe(channel_counts)
-                    try:
-                        fig = px.pie(channel_counts, values='Ticket Count', names='channel', title="Ticket Distribution by Channel")
-                        st.plotly_chart(fig)
-                    except Exception as e:
-                        st.error(f"Error plotting: {str(e)}")
-                    st.download_button(label="📥 Download Zoho Data", data=zoho_df.to_csv(index=False), file_name="zoho_agent_data.csv")
-                else:
-                    st.info("No Zoho data available.")
-                    st.write("Debug: Check zoho_agent_data table and RLS policies.")
+                    st.info("No feedback submitted yet.")
+            except Exception as e:
+                st.error(f"Error plotting data: {str(e)}")
+                st.write("Raw data:")
+                st.write(results)
+        else:
+            st.info("No performance data available for you yet. Please contact your manager to ensure your performance data has been entered.")
+            st.write("Debug: Check the following:")
+            st.write(f"- Ensure performance data exists for '{st.session_state.user}' in the 'performance' table.")
+            st.write("- Verify RLS policies allow you to view your own data.")
+            st.write("- Confirm that the 'agent_name' in the performance table matches your name exactly.")
 
 if __name__ == "__main__":
     main()
