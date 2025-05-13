@@ -129,26 +129,24 @@ def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=Non
         while True:
             query = supabase.table("zoho_agent_data").select("*").range(offset, offset + chunk_size - 1)
 
-            # Filter by agent if provided
             if agent_name:
                 query = query.eq("ticket_owner", agent_name)
 
             response = query.execute()
 
             if not response.data:
-                break  # No more data to fetch
+                break
 
             all_data.extend(response.data)
 
             if len(response.data) < chunk_size:
-                break  # Last page reached
+                break
 
             offset += chunk_size
 
         if all_data:
             df = pd.DataFrame(all_data)
 
-            # Safety checks for expected columns
             if 'id' not in df.columns:
                 st.error("❌ The 'zoho_agent_data' table is missing an 'id' column, required for unique ticket counting.")
                 return pd.DataFrame()
@@ -288,7 +286,6 @@ def authenticate_user(supabase, name, password):
         return False, None, None
 
 def setup_realtime(supabase):
-    # Polling-based refresh instead of Supabase Realtime
     if st.session_state.get("auto_refresh", False):
         current_time = datetime.now()
         last_refresh = st.session_state.get("last_refresh", current_time)
@@ -334,6 +331,17 @@ def main():
             height: 20px;
             border-radius: 5px;
         }
+        .feedback-container {
+            max-height: 400px;
+            overflow-y: auto;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border-radius: 8px;
+        }
+        .feedback-item {
+            border-bottom: 1px solid #ddd;
+            padding: 10px 0;
+        }
         </style>
     """, unsafe_allow_html=True)
 
@@ -377,7 +385,6 @@ def main():
         st.session_state.role = None
         st.rerun()
 
-    # Notifications
     if st.session_state.get("notifications_enabled", False):
         notifications = get_notifications(supabase)
         with st.sidebar.expander(f"🔔 Notifications ({len(notifications)})"):
@@ -393,7 +400,6 @@ def main():
         with st.sidebar.expander("🔔 Notifications (0)"):
             st.write("Notifications disabled (notifications table missing).")
 
-    # Auto-refresh setup
     st.session_state.auto_refresh = st.sidebar.checkbox("Enable Auto-Refresh", value=False)
     setup_realtime(supabase)
     if st.session_state.get("auto_refresh", False) and st.session_state.get("data_updated", False):
@@ -403,7 +409,6 @@ def main():
     st.sidebar.info(f"👤 Logged in as: {st.session_state.user}")
     st.sidebar.info(f"🎓 Role: {st.session_state.role}")
 
-    # Company logo
     try:
         st.image(r"./companylogo.png", width=150)
     except Exception as e:
@@ -563,19 +568,51 @@ def main():
             st.header("💬 View and Respond to Agent Feedback")
             feedback_df = get_feedback(supabase)
             if not feedback_df.empty:
+                feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                feedback_df['response_timestamp'] = pd.to_datetime(feedback_df['response_timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
                 display_columns = ['agent_name', 'message', 'created_at', 'manager_response', 'response_timestamp']
                 if 'updated_by' in feedback_df.columns:
                     display_columns.append('updated_by')
+                st.subheader("Feedback History")
                 st.dataframe(feedback_df[display_columns])
-                with st.form("respond_feedback_form"):
-                    feedback_id = st.selectbox("Select Feedback", options=feedback_df['id'],
-                                             format_func=lambda x: f"{feedback_df[feedback_df['id'] == x]['agent_name'].iloc[0]}: {feedback_df[feedback_df['id'] == x]['message'].iloc[0][:50]}...")
-                    manager_response = st.text_area("Your Response")
-                    if st.form_submit_button("Submit Response"):
-                        if respond_to_feedback(supabase, feedback_id, manager_response, st.session_state.user):
-                            st.success("Response submitted!")
-                            st.rerun()
                 st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="agent_feedback.csv")
+
+                st.subheader("Respond to Feedback")
+                feedback_df = feedback_df.sort_values(by='created_at', ascending=False)
+                latest_feedback = feedback_df.iloc[0] if not feedback_df.empty else None
+
+                st.markdown('<div class="feedback-container">', unsafe_allow_html=True)
+                for _, row in feedback_df.iterrows():
+                    st.markdown('<div class="feedback-item">', unsafe_allow_html=True)
+                    st.write(f"**{row['agent_name']}** ({row['created_at']}): {row['message']}")
+                    if pd.notnull(row['manager_response']):
+                        st.write(f"**Manager Response** ({row['response_timestamp']}): {row['manager_response']}")
+                    if st.button("Reply to this feedback", key=f"reply_{row['id']}"):
+                        st.session_state.reply_to_feedback_id = row['id']
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                with st.form("respond_feedback_form"):
+                    if 'reply_to_feedback_id' in st.session_state:
+                        feedback_id = st.session_state.reply_to_feedback_id
+                        st.write(f"Replying to feedback from {feedback_df[feedback_df['id'] == feedback_id]['agent_name'].iloc[0]}: {feedback_df[feedback_df['id'] == feedback_id]['message'].iloc[0][:50]}...")
+                    else:
+                        feedback_id = latest_feedback['id'] if latest_feedback is not None else None
+                        if feedback_id:
+                            st.write(f"Replying to latest feedback from {latest_feedback['agent_name']}: {latest_feedback['message'][:50]}...")
+                        else:
+                            st.write("No feedback available to reply to.")
+                    manager_response = st.text_area("Your Response", key="manager_response")
+                    if st.form_submit_button("Submit Response"):
+                        if feedback_id and manager_response.strip():
+                            if respond_to_feedback(supabase, feedback_id, manager_response, st.session_state.user):
+                                st.success("Response submitted!")
+                                if 'reply_to_feedback_id' in st.session_state:
+                                    del st.session_state.reply_to_feedback_id
+                                st.rerun()
+                        else:
+                            st.error("Please provide a response and select a feedback to reply to.")
             else:
                 st.info("No feedback submitted.")
 
