@@ -17,7 +17,7 @@ def init_supabase():
         raise e
 
 def check_db(supabase):
-    required_tables = ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications"]
+    required_tables = ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications", "audio_assessments"]
     critical_tables = ["users", "goals", "feedback", "performance"]
     missing_critical = []
     missing_non_critical = []
@@ -38,7 +38,7 @@ def check_db(supabase):
         st.sidebar.error(f"Critical tables missing: {', '.join(missing_critical)}. Please create them to use the app.")
         return False
     if missing_non_critical:
-        st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}. Some features (e.g., notifications) may be unavailable.")
+        st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}. Some features (e.g., notifications, audio assessments) may be unavailable.")
         if "notifications" in missing_non_critical:
             st.session_state.notifications_enabled = False
         else:
@@ -287,6 +287,45 @@ def setup_realtime(supabase):
     else:
         st.sidebar.info("Auto-refresh disabled. Enable to poll data every 30 seconds.")
 
+def upload_audio(supabase, agent_name, audio_file, manager_name):
+    try:
+        file_name = f"{agent_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{audio_file.name}"
+        res = supabase.storage.from_("call-audio").upload(file_name, audio_file.getvalue())
+        audio_url = supabase.storage.from_("call-audio").get_public_url(file_name)
+        supabase.table("audio_assessments").insert({
+            "agent_name": agent_name,
+            "audio_url": audio_url,
+            "upload_timestamp": datetime.now().isoformat(),
+            "assessment_notes": "",
+            "uploaded_by": manager_name
+        }).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error uploading audio: {str(e)}")
+        return False
+
+def get_audio_assessments(supabase, agent_name=None):
+    try:
+        query = supabase.table("audio_assessments").select("*")
+        if agent_name:
+            query = query.eq("agent_name", agent_name)
+        response = query.execute()
+        if response.data:
+            return pd.DataFrame(response.data)
+        st.warning(f"No audio assessments for {agent_name or 'any agents'}.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error retrieving audio assessments: {str(e)}")
+        return pd.DataFrame()
+
+def update_assessment_notes(supabase, audio_id, notes):
+    try:
+        supabase.table("audio_assessments").update({"assessment_notes": notes}).eq("id", audio_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error updating assessment notes: {str(e)}")
+        return False
+
 def main():
     st.set_page_config(page_title="Call Center Assessment System", layout="wide")
     st.markdown("""
@@ -369,7 +408,7 @@ def main():
         st.session_state.notifications_enabled = False
         st.session_state.auto_refresh = False
         st.session_state.last_refresh = datetime.now()
-        st.session_state.cleared_chats = set()  # Track cleared chats
+        st.session_state.cleared_chats = set()
 
     if not st.session_state.user:
         st.title("🔐 Login")
@@ -436,7 +475,7 @@ def main():
                 st.metric("Total Call Volume", f"{total_call_volume}")
             with col3:
                 st.metric("Agent Count", len(results['agent_name'].unique()))
-        tabs = st.tabs(["📋 Set KPIs", "📝 Input Performance", "📊 Assessments", "🎯 Set Goals", "💬 Feedback"])
+        tabs = st.tabs(["📋 Set KPIs", "📝 Input Performance", "📊 Assessments", "🎯 Set Goals", "💬 Feedback", "🎙️ Audio Assessments"])
 
         with tabs[0]:
             st.header("📋 Set KPI Thresholds")
@@ -647,6 +686,45 @@ def main():
                         st.error("Please provide a response and ensure a feedback is selected.")
             else:
                 st.info("No feedback submitted.")
+
+        with tabs[5]:
+            st.header("🎙️ Audio Assessments")
+            st.subheader("Upload Audio for Agent")
+            agents = [user["name"] for user in supabase.table("users").select("*").eq("role", "Agent").execute().data]
+            if not agents:
+                st.warning("No agents found.")
+            else:
+                with st.form("audio_upload_form"):
+                    selected_agent = st.selectbox("Select Agent", agents, key="audio_agent")
+                    audio_file = st.file_uploader("Upload Audio File", type=["mp3", "wav"], key="audio_file")
+                    if st.form_submit_button("Upload Audio"):
+                        if audio_file:
+                            if upload_audio(supabase, selected_agent, audio_file, st.session_state.user):
+                                st.success(f"Audio uploaded for {selected_agent}!")
+                            else:
+                                st.error("Failed to upload audio.")
+                        else:
+                            st.error("Please select an audio file to upload.")
+
+            st.subheader("Review Audio Assessments")
+            audio_df = get_audio_assessments(supabase)
+            if not audio_df.empty:
+                audio_df['upload_timestamp'] = pd.to_datetime(audio_df['upload_timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                for _, row in audio_df.iterrows():
+                    with st.expander(f"{row['agent_name']} - {row['upload_timestamp']}"):
+                        st.audio(row['audio_url'], format="audio/mp3")
+                        st.write(f"Uploaded by: {row['uploaded_by']}")
+                        notes = st.text_area("Assessment Notes", value=row['assessment_notes'], key=f"notes_{row['id']}")
+                        if st.button("Save Notes", key=f"save_notes_{row['id']}"):
+                            if update_assessment_notes(supabase, row['id'], notes):
+                                st.success("Notes saved!")
+                                st.rerun()
+                            else:
+                                st.error("Failed to save notes.")
+                st.dataframe(audio_df[['agent_name', 'upload_timestamp', 'uploaded_by', 'assessment_notes']])
+                st.download_button(label="📥 Download Audio Assessments", data=audio_df.to_csv(index=False), file_name="audio_assessments.csv")
+            else:
+                st.info("No audio assessments available.")
 
     elif st.session_state.role == "Agent":
         st.title(f"👤 Agent Dashboard - {st.session_state.user}")
