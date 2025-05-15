@@ -486,7 +486,7 @@ def main():
     except Exception as e:
         st.warning(f"Failed to load company logo: {str(e)}")
 
-    if st.session_state.role == "Manager":
+        if st.session_state.role == "Manager":
         st.title("📊 Manager Dashboard")
         performance_df = get_performance(supabase)
         if not performance_df.empty:
@@ -503,7 +503,7 @@ def main():
                 st.metric("Agent Count", len(results['agent_name'].unique()))
         tabs = st.tabs(["📋 Set KPIs", "📝 Input Performance", "📊 Assessments", "🎯 Set Goals", "💬 Feedback", "🎙️ Audio Assessments", "✅ Approve Goals"])
 
-                with tabs[0]:
+        with tabs[0]:
             st.header("📋 Set KPI Thresholds")
             kpis = get_kpis(supabase)
             with st.form("kpi_form"):
