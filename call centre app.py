@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from supabase import create_client, Client
+import uuid
 
 def init_supabase():
     try:
@@ -38,7 +39,7 @@ def check_db(supabase):
         st.sidebar.error(f"Critical tables missing: {', '.join(missing_critical)}. Please create them to use the app.")
         return False
     if missing_non_critical:
-        st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}. Some features (e.g., notifications, audio assessments) may be unavailable.")
+        st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}. Some features may be unavailable.")
         if "notifications" in missing_non_critical:
             st.session_state.notifications_enabled = False
         else:
@@ -141,7 +142,7 @@ def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=Non
         if all_data:
             df = pd.DataFrame(all_data)
             if 'id' not in df.columns:
-                st.error("❌ The 'zoho_agent_data' table is missing an 'id' column, required for unique ticket counting.")
+                st.error("❌ The 'zoho_agent_data' table is missing an 'id' column.")
                 return pd.DataFrame()
             if 'ticket_owner' not in df.columns:
                 st.error("❌ The 'zoho_agent_data' table is missing a 'ticket_owner' column.")
@@ -150,15 +151,12 @@ def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=Non
             return df
         else:
             st.warning(f"⚠️ No Zoho agent data found for agent '{agent_name}'.")
-            st.write("Debug: No rows returned from Supabase query.")
             return pd.DataFrame()
     except Exception as e:
         st.error(f"❌ Error retrieving Zoho agent data: {str(e)}")
-        if "violates row-level security policy" in str(e):
-            st.error("🔒 RLS policy is blocking data access. Ensure agents are allowed to view their own data.")
         return pd.DataFrame()
 
-def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
+def set_agent_goal(supabase, agent_name, metric, target_value, manager_name, approval_status="Approved"):
     try:
         schema_check = supabase.table("goals").select("created_by").limit(1).execute()
         include_created_by = 'created_by' in schema_check.data[0] if schema_check.data else False
@@ -166,7 +164,8 @@ def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
             "agent_name": agent_name,
             "metric": metric,
             "target_value": target_value,
-            "status": "Pending"
+            "status": "Pending",
+            "approval_status": approval_status
         }
         if include_created_by:
             goal_data["created_by"] = manager_name
@@ -180,9 +179,36 @@ def set_agent_goal(supabase, agent_name, metric, target_value, manager_name):
         st.error(f"Error setting goal: {str(e)}")
         return False
 
+def approve_goal(supabase, goal_id, manager_name, approve=True):
+    try:
+        schema_check = supabase.table("goals").select("updated_by").limit(1).execute()
+        include_updated_by = 'updated_by' in schema_check.data[0] if schema_check.data else False
+        update_data = {
+            "approval_status": "Approved" if approve else "Rejected",
+            "updated_at": datetime.now().isoformat()
+        }
+        if include_updated_by:
+            update_data["updated_by"] = manager_name
+        supabase.table("goals").update(update_data).eq("id", goal_id).execute()
+        if st.session_state.get("notifications_enabled", False):
+            goal = supabase.table("goals").select("agent_name").eq("id", goal_id).execute()
+            if goal.data:
+                agent_name = goal.data[0]["agent_name"]
+                agent = supabase.table("users").select("id").eq("name", agent_name).execute()
+                if agent.data:
+                    status = "approved" if approve else "rejected"
+                    supabase.table("notifications").insert({
+                        "user_id": agent.data[0]["id"],
+                        "message": f"Your goal update was {status} by {manager_name}"
+                    }).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error approving goal: {str(e)}")
+        return False
+
 def update_goal_status(supabase, agent_name):
     try:
-        goals = supabase.table("goals").select("*").eq("agent_name", agent_name).execute()
+        goals = supabase.table("goals").select("*").eq("agent_name", agent_name).eq("approval_status", "Approved").execute()
         perf = get_performance(supabase, agent_name)
         if not goals.data or perf.empty:
             return
@@ -192,7 +218,7 @@ def update_goal_status(supabase, agent_name):
             target = goal['target_value']
             if metric in latest_perf.columns:
                 value = latest_perf[metric].iloc[0]
-                status = "Achieved" if (metric == "aht" and value <= target) or (metric != "aht" and value >= target) else "Pending"
+                status = "Completed" if (metric == "aht" and value <= target) or (metric != "aht" and value >= target) else "Pending"
                 supabase.table("goals").update({"status": status}).eq("id", goal['id']).execute()
     except Exception as e:
         st.error(f"Error updating goal status: {str(e)}")
@@ -475,14 +501,14 @@ def main():
                 st.metric("Total Call Volume", f"{total_call_volume}")
             with col3:
                 st.metric("Agent Count", len(results['agent_name'].unique()))
-        tabs = st.tabs(["📋 Set KPIs", "📝 Input Performance", "📊 Assessments", "🎯 Set Goals", "💬 Feedback", "🎙️ Audio Assessments"])
+        tabs = st.tabs(["📋 Set KPIs", "📝 Input Performance", "📊 Assessments", "🎯 Set Goals", "💬 Feedback", "🎙️ Audio Assessments", "✅ Approve Goals"])
 
         with tabs[0]:
             st.header("📋 Set KPI Thresholds")
             kpis = get_kpis(supabase)
             with st.form("kpi_form"):
                 attendance = st.number_input("Attendance (%, min)", value=float(kpis.get('attendance', 95.0)), min_value=0.0, max_value=100.0)
-                quality_score = st.number_input("Quality Score (%, min)", value=float(kpis.get('quality_score', 90.0)), min_value=0.0, max_value=100.0)
+                quality_score = st.number_input("Quality Score (%, min)", value=float(kpis.get('quality_score', 90.0)), min_value=0.0, max_value=100 upor
                 product_knowledge = st.number_input("Product Knowledge (%, min)", value=float(kpis.get('product_knowledge', 85.0)), min_value=0.0, max_value=100.0)
                 contact_success_rate = st.number_input("Contact Success Rate (%, min)", value=float(kpis.get('contact_success_rate', 80.0)), min_value=0.0, max_value=100.0)
                 onboarding = st.number_input("Onboarding (%, min)", value=float(kpis.get('onboarding', 90.0)), min_value=0.0, max_value=100.0)
@@ -530,7 +556,7 @@ def main():
                         }
                         if save_performance(supabase, agent, data):
                             st.success(f"Performance saved for {agent}!")
-            
+
             st.subheader("Upload Performance Data")
             uploaded_file = st.file_uploader("Upload CSV", type="csv")
             if uploaded_file:
@@ -583,7 +609,7 @@ def main():
                     if st.form_submit_button("Set Goal"):
                         if set_agent_goal(supabase, agent, metric, target_value, st.session_state.user):
                             st.success(f"Goal set for {agent}!")
-                
+
                 st.subheader("Bulk Set Goals")
                 with st.form("bulk_goals_form"):
                     bulk_agents = st.multiselect("Select Agents", agents, key="bulk_agents")
@@ -595,14 +621,14 @@ def main():
                         for agent in bulk_agents:
                             set_agent_goal(supabase, agent, bulk_metric, bulk_target, st.session_state.user)
                         st.success(f"Goals set for {len(bulk_agents)} agents!")
-                
+
                 st.subheader("Current Goals")
                 goals_df = supabase.table("goals").select("*").in_("agent_name", agents).execute()
                 if goals_df.data:
                     goals_display_df = pd.DataFrame(goals_df.data)
                     goals_display_df['target_value'] = goals_display_df.apply(
                         lambda x: f"{x['target_value']:.1f}{' sec' if x['metric'] == 'aht' else ''}", axis=1)
-                    display_columns = ['agent_name', 'metric', 'target_value', 'status', 'created_at']
+                    display_columns = ['agent_name', 'metric', 'target_value', 'status', 'approval_status', 'created_at']
                     if 'created_by' in goals_display_df.columns:
                         display_columns.insert(4, 'created_by')
                     st.dataframe(goals_display_df[display_columns])
@@ -726,6 +752,37 @@ def main():
             else:
                 st.info("No audio assessments available.")
 
+        with tabs[6]:
+            st.header("✅ Approve Agent Goal Updates")
+            pending_goals = supabase.table("goals").select("*").eq("approval_status", "Pending").execute()
+            if pending_goals.data:
+                pending_df = pd.DataFrame(pending_goals.data)
+                pending_df['target_value'] = pending_df.apply(
+                    lambda x: f"{x['target_value']:.1f}{' sec' if x['metric'] == 'aht' else ''}", axis=1)
+                display_columns = ['agent_name', 'metric', 'target_value', 'status', 'approval_status', 'created_at']
+                if 'created_by' in pending_df.columns:
+                    display_columns.insert(4, 'created_by')
+                st.dataframe(pending_df[display_columns])
+                
+                for _, row in pending_df.iterrows():
+                    with st.expander(f"Review: {row['agent_name']} - {row['metric']}"):
+                        st.write(f"Target Value: {row['target_value']}")
+                        st.write(f"Status: {row['status']}")
+                        st.write(f"Approval Status: {row['approval_status']}")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("Approve", key=f"approve_{row['id']}"):
+                                if approve_goal(supabase, row['id'], st.session_state.user, approve=True):
+                                    st.success(f"Goal approved for {row['agent_name']}!")
+                                    st.rerun()
+                        with col2:
+                            if st.button("Reject", key=f"reject_{row['id']}"):
+                                if approve_goal(supabase, row['id'], st.session_state.user, approve=False):
+                                    st.success(f"Goal rejected for {row['agent_name']}!")
+                                    st.rerun()
+            else:
+                st.info("No pending goal updates to approve.")
+
     elif st.session_state.role == "Agent":
         st.title(f"👤 Agent Dashboard - {st.session_state.user}")
         if st.session_state.user == "Joseph Kavuma":
@@ -810,11 +867,20 @@ def main():
                             progress = min((kpis.get(metric, 600) - current_value) / (kpis.get(metric, 600) - row['target_value']) * 100, 100) if metric == 'aht' else min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
                             color = "green" if progress >= 80 else "orange" if progress >= 50 else "red"
                             st.markdown(f"<div class='progress-bar' style='background-color: {color}; width: {progress}%;'></div>", unsafe_allow_html=True)
-                            st.write(f"{metric.replace('_', ' ').title()}: Target {row['target_value']:.1f}{' sec' if metric == 'aht' else '%'}, Current {current_value:.1f}{' sec' if metric == 'aht' else '%'}, Status: {row['status']}")
-                            if st.button(f"Update {metric} Goal", key=f"update_{metric}"):
-                                new_target = st.number_input(f"New Target for {metric}", value=float(row['target_value']))
-                                supabase.table("goals").update({"target_value": new_target}).eq("id", row['id']).execute()
-                                st.success("Goal updated! (Pending approval)")
+                            st.write(f"{metric.replace('_', ' ').title()}: Target {row['target_value']:.1f}{' sec' if metric == 'aht' else '%'}, Current {current_value:.1f}{' sec' if metric == 'aht' else '%'}, Status: {row['status']}, Approval: {row['approval_status']}")
+                            if row['approval_status'] != "Rejected":
+                                with st.form(f"update_goal_form_{metric}"):
+                                    new_target = st.number_input(f"New Target for {metric}", value=float(row['target_value']), min_value=0.0)
+                                    if st.form_submit_button(f"Update {metric} Goal"):
+                                        if set_agent_goal(supabase, st.session_state.user, metric, new_target, st.session_state.user, approval_status="Pending"):
+                                            if st.session_state.get("notifications_enabled", False):
+                                                managers = supabase.table("users").select("id").eq("role", "Manager").execute()
+                                                for manager in managers.data:
+                                                    supabase.table("notifications").insert({
+                                                        "user_id": manager["id"],
+                                                        "message": f"{st.session_state.user} requested to update {metric} goal to {new_target}"
+                                                    }).execute()
+                                            st.success("Goal update submitted! (Pending manager approval)")
                         else:
                             st.write(f"No goal set for {metric.replace('_', ' ').title()}.")
                 else:
