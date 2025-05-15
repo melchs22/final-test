@@ -486,7 +486,7 @@ def main():
     except Exception as e:
         st.warning(f"Failed to load company logo: {str(e)}")
 
-        if st.session_state.role == "Manager":
+    if st.session_state.role == "Manager":
         st.title("📊 Manager Dashboard")
         performance_df = get_performance(supabase)
         if not performance_df.empty:
@@ -540,7 +540,7 @@ def main():
                     quality_score = st.number_input("Quality Score (%)", min_value=0.0, max_value=100.0)
                     product_knowledge = st.number_input("Product Knowledge (%)", min_value=0.0, max_value=100.0)
                     contact_success_rate = st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0)
-                    onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0)
+                    onboarding = st.number_input("Onboarding (%)", pace=0.1)
                     reporting = st.number_input("Reporting (%)", min_value=0.0, max_value=100.0)
                     talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)
                     resolution_rate = st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0)
