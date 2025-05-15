@@ -503,7 +503,7 @@ def main():
                 st.metric("Agent Count", len(results['agent_name'].unique()))
         tabs = st.tabs(["📋 Set KPIs", "📝 Input Performance", "📊 Assessments", "🎯 Set Goals", "💬 Feedback", "🎙️ Audio Assessments", "✅ Approve Goals"])
 
-               with tabs[0]:
+        with tabs[0]:
             st.header("📋 Set KPI Thresholds")
             kpis = get_kpis(supabase)
             with st.form("kpi_form"):
@@ -540,7 +540,7 @@ def main():
                     quality_score = st.number_input("Quality Score (%)", min_value=0.0, max_value=100.0)
                     product_knowledge = st.number_input("Product Knowledge (%)", min_value=0.0, max_value=100.0)
                     contact_success_rate = st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0)
-                    onboarding = st.number_input("Onboarding (%)", pace=0.1)
+                    onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0, step=0.1)
                     reporting = st.number_input("Reporting (%)", min_value=0.0, max_value=100.0)
                     talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)
                     resolution_rate = st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0)
