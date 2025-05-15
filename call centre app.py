@@ -503,7 +503,7 @@ def main():
                 st.metric("Agent Count", len(results['agent_name'].unique()))
         tabs = st.tabs(["📋 Set KPIs", "📝 Input Performance", "📊 Assessments", "🎯 Set Goals", "💬 Feedback", "🎙️ Audio Assessments", "✅ Approve Goals"])
 
-        with tabs[0]:
+               with tabs[0]:
             st.header("📋 Set KPI Thresholds")
             kpis = get_kpis(supabase)
             with st.form("kpi_form"):
