@@ -529,33 +529,6 @@ def main():
                         st.success("KPIs saved!")
 
         with tabs[1]:
-            st.header("📝 Input Agent Performance")
-            agents = [user["name"] for user in supabase.table("users").select("*").eq("role", "Agent").execute().data]
-            if not agents:
-                st.warning("No agents found.")
-            else:
-                with st.form("performance_form"):
-                    agent = st.selectbox("Select Agent", agents)
-                    attendance = st.number_input("Attendance (%)", min_value=0.0, max_value=100.0)
-                    quality_score = st.number_input("Quality Score (%)", min_value=0.0, max_value=100.0)
-                    product_knowledge = st.number_input("Product Knowledge (%)", min_value=0.0, max_value=100.0)
-                    contact_success_rate = st.number_input("Contact Success Rate (%)", min_value=0.0, max_value=100.0)
-                    onboarding = st.number_input("Onboarding (%)", min_value=0.0, max_value=100.0, step=0.1)
-                    reporting = st.number_input("Reporting (%)", min_value=0.0, max_value=100.0)
-                    talk_time = st.number_input("CRM Talk Time (seconds)", min_value=0.0)
-                    resolution_rate = st.number_input("Issue Resolution Rate (%)", min_value=0.0, max_value=100.0)
-                    aht = st.number_input("Average Handle Time (seconds)", min_value=0.0)
-                    csat = st.number_input("Customer Satisfaction (%)", min_value=0.0, max_value=100.0)
-                    call_volume = st.number_input("Call Volume (calls)", min_value=0)
-                    if st.form_submit_button("Submit Performance"):
-                        data = {
-                            'attendance': attendance, 'quality_score': quality_score, 'product_knowledge': product_knowledge,
-                            'contact_success_rate': contact_success_rate, 'onboarding': onboarding, 'reporting': reporting,
-                            'talk_time': talk_time, 'resolution_rate': resolution_rate, 'aht': aht, 'csat': csat,
-                            'call_volume': call_volume
-                        }
-                        if save_performance(supabase, agent, data):
-                            st.success(f"Performance saved for {agent}!")
 
             st.subheader("Upload Performance Data")
             uploaded_file = st.file_uploader("Upload CSV", type="csv")
