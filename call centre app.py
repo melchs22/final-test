@@ -58,8 +58,13 @@ def get_kpis(supabase):
         kpis = {}
         for row in response.data:
             for key, value in row.items():
-                if key != "metric" and value is not None:
-                    kpis[key] = float(value) if key != "call_volume" else int(float(value))
+                # Skip non-metric columns like 'id' and 'metric'
+                if key in ["id", "metric"] or value is None:
+                    continue
+                if key == "call_volume":
+                    kpis[key] = int(float(value))
+                else:
+                    kpis[key] = float(value)
         return kpis
     except Exception as e:
         st.error(f"Error retrieving KPIs: {str(e)}")
@@ -138,7 +143,11 @@ def get_feedback(supabase, agent_name=None):
         else:
             response = supabase.table("feedback").select("*").execute()
         if response.data:
-            return pd.DataFrame(response.data)
+            df = pd.DataFrame(response.data)
+            # Rename 'created_at' to 'timestamp' if needed
+            if 'created_at' in df.columns and 'timestamp' not in df.columns:
+                df['timestamp'] = df['created_at']
+            return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Error retrieving feedback: {str(e)}")
@@ -247,7 +256,8 @@ def main():
         "Input Feedback",
         "View Feedback",
         "Set KPI Thresholds",
-        "Audio Assessments"
+        "Audio Assessments",
+        "Agent Dashboard"
     ])
 
     # Dashboard
@@ -323,7 +333,10 @@ def main():
         feedback_df = get_feedback(supabase, agent_filter)
 
         if not feedback_df.empty:
-            feedback_df['timestamp'] = pd.to_datetime(feedback_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+            if 'timestamp' in feedback_df.columns:
+                feedback_df['timestamp'] = pd.to_datetime(feedback_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                feedback_df['timestamp'] = "N/A"  # Fallback if timestamp is missing
             st.dataframe(feedback_df)
             st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="feedback.csv")
         else:
@@ -456,6 +469,40 @@ def main():
                 st.download_button(label="📥 Download Audio Assessments", data=display_df.to_csv(index=False), file_name="audio_assessments.csv")
             else:
                 st.info("No audio assessments available.")
+
+    # Agent Dashboard
+    with tabs[6]:
+        if st.session_state.role != "Agent":
+            st.warning("Only Agents can view this dashboard.")
+        else:
+            st.subheader(f"{st.session_state.user}'s Dashboard")
+            
+            # Performance Data
+            perf_df = get_performance(supabase, st.session_state.user)
+            if not perf_df.empty:
+                perf_df['date'] = pd.to_datetime(perf_df['date'])
+                st.subheader("Performance Metrics")
+                for column in ['attendance', 'quality_score', 'call_volume', 'resolution_rate', 'feedback_score']:
+                    if column in perf_df.columns:
+                        avg_value = perf_df[column].mean()
+                        st.metric(label=column.replace('_', ' ').title(), value=f"{avg_value:.1f}")
+                fig = px.line(perf_df, x='date', y=['attendance', 'quality_score', 'resolution_rate', 'feedback_score'],
+                             title="Performance Over Time", labels={'value': 'Score (%)', 'variable': 'Metric'})
+                st.plotly_chart(fig)
+            else:
+                st.info("No performance data available for you.")
+
+            # Feedback Data
+            feedback_df = get_feedback(supabase, st.session_state.user)
+            if not feedback_df.empty:
+                if 'timestamp' in feedback_df.columns:
+                    feedback_df['timestamp'] = pd.to_datetime(feedback_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    feedback_df['timestamp'] = "N/A"
+                st.subheader("Feedback")
+                st.dataframe(feedback_df[['timestamp', 'manager_name', 'feedback']])
+            else:
+                st.info("No feedback available for you.")
 
 if __name__ == "__main__":
     main()
