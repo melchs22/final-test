@@ -179,7 +179,11 @@ def get_audio_assessments(supabase, agent_name=None):
         else:
             response = supabase.table("audio_assessments").select("*").execute()
         if response.data:
-            return pd.DataFrame(response.data)
+            df = pd.DataFrame(response.data)
+            # Ensure 'id' is a string
+            if 'id' in df.columns:
+                df['id'] = df['id'].astype(str)
+            return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Error retrieving audio assessments: {str(e)}")
@@ -394,67 +398,71 @@ def main():
             if not audio_df.empty:
                 audio_df['upload_timestamp'] = pd.to_datetime(audio_df['upload_timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
                 for _, row in audio_df.iterrows():
-                    with st.expander(f"{row['agent_name']} - {row['upload_timestamp']}"):
-                        st.audio(row['audio_url'], format="audio/mp3")
-                        st.write(f"Uploaded by: {row['uploaded_by']}")
+                    try:
+                        with st.expander(f"{row['agent_name']} - {row['upload_timestamp']}"):
+                            st.audio(row['audio_url'], format="audio/mp3")
+                            st.write(f"Uploaded by: {row['uploaded_by']}")
 
-                        # Parse existing assessment notes (JSON)
-                        assessment_data = row['assessment_notes'] if isinstance(row['assessment_notes'], dict) else {}
-                        if isinstance(assessment_data, str):
-                            try:
-                                assessment_data = json.loads(assessment_data) if assessment_data else {}
-                            except:
-                                assessment_data = {}
+                            # Parse existing assessment notes (JSON)
+                            assessment_data = row['assessment_notes'] if isinstance(row['assessment_notes'], dict) else {}
+                            if isinstance(assessment_data, str):
+                                try:
+                                    assessment_data = json.loads(assessment_data) if assessment_data else {}
+                                except:
+                                    assessment_data = {}
 
-                        # Form to input marks
-                        with st.form(key=f"assessment_form_{row['id']}"):
-                            st.subheader("Call Assessment Scores (0-10)")
-                            new_assessment = {}
-                            overall_scores = {}
+                            # Form to input marks
+                            with st.form(key=f"assessment_form_{row['id']}"):
+                                st.subheader("Call Assessment Scores (0-10)")
+                                new_assessment = {}
+                                overall_scores = {}
 
-                            # Iterate through categories and subcategories
-                            for category, subcategories in KPI_CATEGORIES.items():
-                                st.markdown(f"**{category}**")
-                                category_scores = []
-                                for subcategory in subcategories:
-                                    # Convert subcategory to a key-friendly format
-                                    key = subcategory.lower().replace(" ", "_").replace("&", "and").replace("(", "").replace(")", "")
-                                    score = st.number_input(
-                                        f"{subcategory} (0-10)",
-                                        min_value=0,
-                                        max_value=10,
-                                        value=int(assessment_data.get(key, 0)),
-                                        step=1,
-                                        key=f"{key}_{row['id']}"
-                                    )
-                                    new_assessment[key] = score
-                                    category_scores.append(score)
+                                # Iterate through categories and subcategories
+                                for category, subcategories in KPI_CATEGORIES.items():
+                                    st.markdown(f"**{category}**")
+                                    category_scores = []
+                                    for subcategory in subcategories:
+                                        # Convert subcategory to a key-friendly format
+                                        key = subcategory.lower().replace(" ", "_").replace("&", "and").replace("(", "").replace(")", "")
+                                        score = st.number_input(
+                                            f"{subcategory} (0-10)",
+                                            min_value=0,
+                                            max_value=10,
+                                            value=int(assessment_data.get(key, 0)),
+                                            step=1,
+                                            key=f"{key}_{row['id']}"
+                                        )
+                                        new_assessment[key] = score
+                                        category_scores.append(score)
 
-                                # Calculate overall score for the category
-                                if category_scores:
-                                    overall_score = sum(category_scores) / len(category_scores)
-                                    overall_scores[category] = overall_score
-                                    st.write(f"Overall {category}: {overall_score:.1f}/10")
+                                    # Calculate overall score for the category
+                                    if category_scores:
+                                        overall_score = sum(category_scores) / len(category_scores)
+                                        overall_scores[category] = overall_score
+                                        st.write(f"Overall {category}: {overall_score:.1f}/10")
 
-                            # Calculate Overall Scores on Quality Attributes
-                            quality_attributes = [
-                                new_assessment.get("standard_verbiage_and_procedures", 0),
-                                new_assessment.get("issue_identification", 0),
-                                new_assessment.get("issue_resolution", 0),
-                                new_assessment.get("call_courtesy", 0),
-                                new_assessment.get("call_ticketing_and_crm_accuracy", 0)
-                            ]
-                            if quality_attributes:
-                                overall_quality_score = sum(quality_attributes) / len(quality_attributes)
-                                st.markdown(f"**Overall Scores on Quality Attributes**: {overall_quality_score:.1f}/10")
+                                # Calculate Overall Scores on Quality Attributes
+                                quality_attributes = [
+                                    new_assessment.get("standard_verbiage_and_procedures", 0),
+                                    new_assessment.get("issue_identification", 0),
+                                    new_assessment.get("issue_resolution", 0),
+                                    new_assessment.get("call_courtesy", 0),
+                                    new_assessment.get("call_ticketing_and_crm_accuracy", 0)
+                                ]
+                                if quality_attributes:
+                                    overall_quality_score = sum(quality_attributes) / len(quality_attributes)
+                                    st.markdown(f"**Overall Scores on Quality Attributes**: {overall_quality_score:.1f}/10")
 
-                            # Submit button
-                            if st.form_submit_button("Save Assessment", key=f"save_assessment_{row['id']}"):
-                                if update_assessment_notes(supabase, row['id'], new_assessment):
-                                    st.success("Assessment saved!")
-                                    st.rerun()
-                                else:
-                                    st.error("Failed to save assessment.")
+                                # Submit button
+                                if st.form_submit_button("Save Assessment", key=f"save_assessment_{row['id']}"):
+                                    if update_assessment_notes(supabase, row['id'], new_assessment):
+                                        st.success("Assessment saved!")
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to save assessment.")
+                    except Exception as e:
+                        st.error(f"Error rendering assessment for {row['agent_name']}: {str(e)}")
+                        continue
 
                 # Update the dataframe display to include scores
                 display_df = audio_df.copy()
