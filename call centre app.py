@@ -58,8 +58,8 @@ def get_kpis(supabase):
         kpis = {}
         for row in response.data:
             for key, value in row.items():
-                # Skip non-metric columns like 'id' and 'metric'
-                if key in ["id", "metric"] or value is None:
+                # Skip non-metric columns like 'id', 'metric', and timestamp columns
+                if key in ["id", "metric"] or value is None or any(t in key.lower() for t in ["time", "date"]):
                     continue
                 if key == "call_volume":
                     kpis[key] = int(float(value))
@@ -254,42 +254,44 @@ def main():
     st.title("Call Centre Performance Tracker")
     st.write(f"Logged in as: {st.session_state.user} ({st.session_state.role})")
 
-    tabs = st.tabs([
-        "Dashboard",
-        "Input Performance",
-        "Input Feedback",
-        "View Feedback",
-        "Set KPI Thresholds",
-        "Audio Assessments",
-        "Agent Dashboard"
-    ])
+    # Conditional tab rendering based on role
+    if st.session_state.role == "Agent":
+        tabs = st.tabs(["Agent Dashboard"])
+    else:  # Manager
+        tabs = st.tabs([
+            "Dashboard",
+            "Input Performance",
+            "Input Feedback",
+            "View Feedback",
+            "Set KPI Thresholds",
+            "Audio Assessments"
+        ])
 
-    # Dashboard
-    with tabs[0]:
-        st.subheader("Performance Dashboard")
-        agents = get_users(supabase)
-        selected_agent = st.selectbox("Select Agent", ["All Agents"] + agents, key="dashboard_agent")
-        agent_filter = None if selected_agent == "All Agents" else selected_agent
-        perf_df = get_performance(supabase, agent_filter)
+    # Dashboard (Manager only)
+    if st.session_state.role != "Agent" and tabs[0].name == "Dashboard":
+        with tabs[0]:
+            st.subheader("Performance Dashboard")
+            agents = get_users(supabase)
+            selected_agent = st.selectbox("Select Agent", ["All Agents"] + agents, key="dashboard_agent")
+            agent_filter = None if selected_agent == "All Agents" else selected_agent
+            perf_df = get_performance(supabase, agent_filter)
 
-        if not perf_df.empty:
-            perf_df['date'] = pd.to_datetime(perf_df['date'])
-            kpis = get_kpis(supabase)
-            for metric in ['attendance', 'quality_score', 'call_volume', 'resolution_rate', 'feedback_score']:
-                if metric in kpis:
-                    fig = px.line(perf_df, x='date', y=metric, color='agent_name',
-                                 title=f"{metric.replace('_', ' ').title()} Over Time")
-                    fig.add_hline(y=kpis[metric], line_dash="dash", annotation_text=f"Threshold: {kpis[metric]}")
-                    st.plotly_chart(fig)
-        else:
-            st.info("No performance data available.")
+            if not perf_df.empty:
+                perf_df['date'] = pd.to_datetime(perf_df['date'])
+                kpis = get_kpis(supabase)
+                for metric in ['attendance', 'quality_score', 'call_volume', 'resolution_rate', 'feedback_score']:
+                    if metric in kpis:
+                        fig = px.line(perf_df, x='date', y=metric, color='agent_name',
+                                     title=f"{metric.replace('_', ' ').title()} Over Time")
+                        fig.add_hline(y=kpis[metric], line_dash="dash", annotation_text=f"Threshold: {kpis[metric]}")
+                        st.plotly_chart(fig)
+            else:
+                st.info("No performance data available.")
 
-    # Input Performance
-    with tabs[1]:
-        st.subheader("Input Agent Performance")
-        if st.session_state.role != "Manager":
-            st.warning("Only Managers can input performance data.")
-        else:
+    # Input Performance (Manager only)
+    if st.session_state.role != "Agent" and tabs[1].name == "Input Performance":
+        with tabs[1]:
+            st.subheader("Input Agent Performance")
             agents = [agent for agent in get_users(supabase) if agent != st.session_state.user]
             agent = st.selectbox("Select Agent", agents, key="input_agent")
             date = st.date_input("Select Date", datetime.now())
@@ -313,12 +315,10 @@ def main():
                 else:
                     st.error("Failed to save performance data.")
 
-    # Input Feedback
-    with tabs[2]:
-        st.subheader("Input Feedback")
-        if st.session_state.role != "Manager":
-            st.warning("Only Managers can input feedback.")
-        else:
+    # Input Feedback (Manager only)
+    if st.session_state.role != "Agent" and tabs[2].name == "Input Feedback":
+        with tabs[2]:
+            st.subheader("Input Feedback")
             agents = [agent for agent in get_users(supabase) if agent != st.session_state.user]
             agent = st.selectbox("Select Agent", agents, key="feedback_agent")
             feedback = st.text_area("Feedback")
@@ -328,30 +328,29 @@ def main():
                 else:
                     st.error("Failed to save feedback.")
 
-    # View Feedback
-    with tabs[3]:
-        st.subheader("View Feedback")
-        agents = get_users(supabase)
-        selected_agent = st.selectbox("Select Agent", ["All Agents"] + agents, key="view_feedback_agent")
-        agent_filter = None if selected_agent == "All Agents" else selected_agent
-        feedback_df = get_feedback(supabase, agent_filter)
+    # View Feedback (Manager only)
+    if st.session_state.role != "Agent" and tabs[3].name == "View Feedback":
+        with tabs[3]:
+            st.subheader("View Feedback")
+            agents = get_users(supabase)
+            selected_agent = st.selectbox("Select Agent", ["All Agents"] + agents, key="view_feedback_agent")
+            agent_filter = None if selected_agent == "All Agents" else selected_agent
+            feedback_df = get_feedback(supabase, agent_filter)
 
-        if not feedback_df.empty:
-            if 'timestamp' in feedback_df.columns:
-                feedback_df['timestamp'] = pd.to_datetime(feedback_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+            if not feedback_df.empty:
+                if 'timestamp' in feedback_df.columns:
+                    feedback_df['timestamp'] = pd.to_datetime(feedback_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    feedback_df['timestamp'] = "N/A"  # Fallback if timestamp is missing
+                st.dataframe(feedback_df)
+                st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="feedback.csv")
             else:
-                feedback_df['timestamp'] = "N/A"  # Fallback if timestamp is missing
-            st.dataframe(feedback_df)
-            st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="feedback.csv")
-        else:
-            st.info("No feedback available.")
+                st.info("No feedback available.")
 
-    # Set KPI Thresholds
-    with tabs[4]:
-        st.subheader("Set KPI Thresholds")
-        if st.session_state.role != "Manager":
-            st.warning("Only Managers can set KPI thresholds.")
-        else:
+    # Set KPI Thresholds (Manager only)
+    if st.session_state.role != "Agent" and tabs[4].name == "Set KPI Thresholds":
+        with tabs[4]:
+            st.subheader("Set KPI Thresholds")
             kpis = get_kpis(supabase)
             default_kpis = {
                 "attendance": 90.0,
@@ -374,11 +373,9 @@ def main():
                     else:
                         st.error("Failed to save KPI thresholds.")
 
-    # Audio Assessments
-    with tabs[5]:
-        if st.session_state.role != "Manager":
-            st.warning("Only Managers can manage audio assessments.")
-        else:
+    # Audio Assessments (Manager only)
+    if st.session_state.role != "Agent" and tabs[5].name == "Audio Assessments":
+        with tabs[5]:
             st.subheader("Upload Audio for Assessment")
             agents = [agent for agent in get_users(supabase) if agent != st.session_state.user]
             agent = st.selectbox("Select Agent", agents, key="audio_agent")
@@ -454,7 +451,7 @@ def main():
                                     st.markdown(f"**Overall Scores on Quality Attributes**: {overall_quality_score:.1f}/10")
 
                                 # Submit button
-                                if st.form_submit_button("Save Assessment", key=f"save_assessment_{row['id']}"):
+                                if st.form_submit_button("Save Assessment"):  # Removed key parameter
                                     if update_assessment_notes(supabase, row['id'], new_assessment):
                                         st.success("Assessment saved!")
                                         st.rerun()
@@ -479,10 +476,8 @@ def main():
                 st.info("No audio assessments available.")
 
     # Agent Dashboard
-    with tabs[6]:
-        if st.session_state.role != "Agent":
-            st.warning("Only Agents can view this dashboard.")
-        else:
+    if st.session_state.role == "Agent" and tabs[0].name == "Agent Dashboard":
+        with tabs[0]:
             st.subheader(f"{st.session_state.user}'s Dashboard")
             
             # Performance Data
