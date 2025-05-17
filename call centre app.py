@@ -34,9 +34,13 @@ def init_supabase():
         if not url.startswith("https://"):
             url = f"https://{url}"
         client = create_client(url, key)
-        # Check if using anonymous key
-        if key == st.secrets["supabase"].get("anon_key", ""):
-            st.warning("Using anonymous Supabase key. RLS policies for 'authenticated' role may fail.")
+        # Debug: Check authentication status
+        session = client.auth.get_session()
+        st.write("**Debug: Supabase Initialization**")
+        st.write(f"Session Active: {session is not None}")
+        st.write(f"Using Key: {'Service Role' if key == st.secrets['supabase'].get('service_role_key') else 'Anon or Other'}")
+        if not session:
+            st.warning("No active Supabase session. Operations may fail due to RLS policies.")
         return client
     except Exception as e:
         st.error(f"Failed to connect to Supabase: {str(e)}")
@@ -52,6 +56,11 @@ def authenticate_user(supabase, email, password):
             if user_data.data:
                 supabase.auth.set_session(response.session.access_token)
                 st.session_state.supabase_user_id = user_data.data["id"]
+                # Debug: Log authentication details
+                st.write("**Debug: Authentication**")
+                st.write(f"User ID: {user_data.data['id']}")
+                st.write(f"Name: {user_data.data['name']}")
+                st.write(f"Role: {user_data.data['role']}")
                 return True, user_data.data["name"], user_data.data["role"], user_data.data["id"]
             else:
                 st.error("User not found in users table. Please ensure your account is set up.")
@@ -63,82 +72,27 @@ def authenticate_user(supabase, email, password):
         st.error(f"Authentication failed: {str(e)}")
         return False, None, None, None
 
-def set_supabase_session(supabase, user_id):
-    # Ensure session is set for authenticated user
-    if is_valid_uuid(user_id):
-        st.session_state.supabase_user_id = user_id
-    else:
-        st.error(f"Invalid user_id format: {user_id}")
-
-def check_db(supabase):
-    required_tables = ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications", "audio_assessments", "cdr_reports"]
-    critical_tables = ["users", "goals", "feedback", "performance"]
-    missing_critical = []
-    missing_non_critical = []
-    
-    for table in required_tables:
-        try:
-            supabase.table(table).select("count").limit(1).execute()
-        except Exception as e:
-            if 'relation' in str(e).lower() and 'does not exist' in str(e).lower():
-                if table in critical_tables:
-                    missing_critical.append(table)
-                else:
-                    missing_non_critical.append(table)
-            else:
-                st.sidebar.warning(f"Error accessing {table}: {str(e)}")
-    
-    if missing_critical:
-        st.sidebar.error(f"Critical tables missing: {', '.join(missing_critical)}. Please create them to use the app.")
-        return False
-    if missing_non_critical:
-        st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}. Some features may be unavailable.")
-        if "notifications" in missing_non_critical:
-            st.session_state.notifications_enabled = False
-        else:
-            st.session_state.notifications_enabled = True
-        if "cdr_reports" in missing_non_critical:
-            st.session_state.cdr_enabled = False
-        else:
-            st.session_state.cdr_enabled = True
-    else:
-        st.session_state.notifications_enabled = True
-        st.session_state.cdr_enabled = True
-        st.sidebar.success("✅ Connected to database successfully")
-    return True
-
-def parse_duration(duration_str):
-    try:
-        match = re.match(r'(\d+)s', str(duration_str))
-        if match:
-            return int(match.group(1))
-        return 0
-    except Exception as e:
-        st.error(f"Error parsing duration '{duration_str}': {str(e)}")
-        return 0
-
-def determine_call_direction(source):
-    source_str = str(source).strip()
-    if source_str in AGENT_EXTENSIONS:
-        return "outbound"
-    elif source_str.startswith("+"):
-        return "inbound"
-    elif source_str.startswith("8001"):
-        return "queue"
-    return "unknown"
-
 def save_cdr_data(supabase, cdr_data):
     try:
-        # Debug: Log user context
+        # Debug: Log user context and authentication status
         user_id = st.session_state.get("supabase_user_id", None)
         st.write("**Debug: User Context for CDR Save**")
         st.write(f"User ID: {user_id if user_id else 'Not set'}")
+        session = supabase.auth.get_session()
+        st.write(f"Supabase Session Active: {session is not None}")
+        if session:
+            st.write(f"Authenticated User ID: {session.user.id if session.user else 'None'}")
         
         if user_id and is_valid_uuid(user_id):
             user_data = supabase.table("users").select("name, role").eq("id", user_id).execute()
             st.write(f"User Data: {user_data.data if user_data.data else 'No user data found'}")
+            if user_data.data and user_data.data[0]["role"] != "Manager":
+                st.error("Only Managers can save CDR data.")
+                return False
         else:
             st.warning("Skipping user data query due to invalid or missing user_id.")
+            st.error("Cannot save CDR data: User not authenticated or invalid user_id.")
+            return False
         
         for _, row in cdr_data.iterrows():
             agent_name = None
@@ -182,35 +136,13 @@ def save_cdr_data(supabase, cdr_data):
             st.error("🔒 RLS policy is blocking the operation. Check user authentication and role in 'users' table.")
             st.write("Suggestions:")
             st.write("- Ensure you are logged in as a Manager with role='Manager' in the users table.")
-            st.write("- Verify Supabase Authentication is enabled and the client uses a JWT token.")
+            st.write("- Verify Supabase Authentication is enabled and the client uses a valid JWT token.")
             st.write("- Check RLS policies for 'cdr_reports' table in Supabase dashboard.")
-        elif "invalid input syntax for type uuid" in str(e):
-            st.error("🔍 Invalid UUID provided. Ensure the user is properly authenticated and has a valid UUID in the users table.")
+            st.write("- Ensure the user's ID in 'users' table matches the authenticated user's ID (auth.uid()).")
+            st.write(f"Current User ID: {user_id if user_id else 'None'}")
+            if user_data.data:
+                st.write(f"Current Role: {user_data.data[0]['role'] if user_data.data else 'Unknown'}")
         return False
-
-def get_cdr_data(supabase, agent_name=None, start_date=None, end_date=None):
-    try:
-        query = supabase.table("cdr_reports").select("*")
-        if agent_name:
-            query = query.eq("agent_name", agent_name)
-        if start_date:
-            query = query.gte("date", start_date.isoformat())
-        if end_date:
-            query = query.lte("date", end_date.isoformat())
-        response = query.execute()
-        if response.data:
-            df = pd.DataFrame(response.data)
-            df['date'] = pd.to_datetime(df['date'])
-            df['duration'] = pd.to_numeric(df['duration'], errors='coerce').fillna(0).astype(int)
-            return df
-        st.warning(f"No CDR data found for agent: {agent_name or 'All'}.")
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error retrieving CDR data: {str(e)}")
-        if "violates row-level security policy" in str(e):
-            st.error("🔒 RLS policy is blocking data access. Ensure agents are allowed to view their own data.")
-        return pd.DataFrame()
-
 def save_kpis(supabase, kpis):
     try:
         for metric, value in kpis.items():
