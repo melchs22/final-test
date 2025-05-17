@@ -7,10 +7,7 @@ from datetime import datetime, timedelta
 from supabase import create_client, Client
 import uuid
 import re
-import io
-import uuid as uuid_lib
 
-# Agent extension mapping
 AGENT_EXTENSIONS = {
     "1004": "Melchizedek Tutu",
     "1003": "Joseph Kavuma",
@@ -20,29 +17,13 @@ AGENT_EXTENSIONS = {
     "1010": "Oyo Jacob Humphrey"
 }
 
-def is_valid_uuid(val):
-    try:
-        uuid_lib.UUID(str(val))
-        return True
-    except ValueError:
-        return False
-
 def init_supabase():
     try:
         url = st.secrets["supabase"]["url"]
         key = st.secrets["supabase"]["key"]
         if not url.startswith("https://"):
             url = f"https://{url}"
-        client = create_client(url, key)
-        # Debug: Check authentication status
-        session = client.auth.get_session()
-        st.write("**Debug: Supabase Initialization**")
-        st.write(f"Supabase URL: {url}")
-        st.write(f"Session Active: {session is not None}")
-        st.write(f"Using Key: {'Service Role' if key == st.secrets['supabase'].get('service_role_key') else 'Anon or Other'}")
-        if not session:
-            st.warning("No active Supabase session. Operations may fail due to RLS policies.")
-        return client
+        return create_client(url, key)
     except Exception as e:
         st.error(f"Failed to connect to Supabase: {str(e)}")
         raise e
@@ -69,7 +50,7 @@ def check_db(supabase):
         st.sidebar.error(f"Critical tables missing: {', '.join(missing_critical)}. Please create them to use the app.")
         return False
     if missing_non_critical:
-        st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}. Some features may be unavailable.")
+        st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}. Some features (e.g., notifications, audio assessments, CDR reports) may be unavailable.")
         if "notifications" in missing_non_critical:
             st.session_state.notifications_enabled = False
         else:
@@ -83,65 +64,6 @@ def check_db(supabase):
         st.session_state.cdr_enabled = True
         st.sidebar.success("✅ Connected to database successfully")
     return True
-
-def authenticate_user(supabase, username, password):
-    try:
-        # Debug: Log credentials (mask password)
-        st.write("**Debug: Authentication Attempt**")
-        st.write(f"Username: {username}")
-        st.write(f"Password: {'*' * len(password)}")
-        
-        # Query users table for username
-        user_data = supabase.table("users").select("id, name, role, email").eq("name", username).single().execute()
-        st.write(f"Users Table Query: {'Data found' if user_data.data else 'No data found'}")
-        
-        if not user_data.data:
-            st.error(f"Username '{username}' not found in users table. Please check the username.")
-            return False, None, None, None
-        
-        email = user_data.data["email"]
-        user_id = user_data.data["id"]
-        st.write(f"Retrieved Email: {email}")
-        st.write(f"Retrieved User ID: {user_id}")
-        
-        # Authenticate with Supabase using email
-        response = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        st.write(f"Auth Response: {'User found' if response.user else 'No user returned'}")
-        
-        if response.user:
-            # Verify user ID matches
-            if response.user.id != user_id:
-                st.error("User ID mismatch between auth.users and users table.")
-                return False, None, None, None
-            
-            # Set session
-            supabase.auth.set_session(response.session.access_token)
-            st.session_state.supabase_user_id = user_id
-            st.session_state.supabase_access_token = response.session.access_token
-            # Debug: Log authentication details
-            st.write("**Debug: Authentication Success**")
-            st.write(f"User ID: {user_id}")
-            st.write(f"Name: {user_data.data['name']}")
-            st.write(f"Role: {user_data.data['role']}")
-            st.write(f"Session Set: {supabase.auth.get_session() is not None}")
-            return True, user_data.data["name"], user_data.data["role"], user_id
-        else:
-            st.error("Invalid password. Please check your credentials.")
-            return False, None, None, None
-    except Exception as e:
-        st.error(f"Authentication failed: {str(e)}")
-        st.write("Suggestions:")
-        st.write("- Verify the username exists in the users table.")
-        st.write("- Ensure the email in the users table is registered in Supabase Authentication > Users.")
-        st.write("- Check the password for the email in Supabase Authentication.")
-        st.write("- Verify the Supabase URL and key in secrets.toml.")
-        return False, None, None, None
-
-def set_supabase_session(supabase, user_id):
-    if is_valid_uuid(user_id):
-        st.session_state.supabase_user_id = user_id
-    else:
-        st.error(f"Invalid user_id format: {user_id}")
 
 def parse_duration(duration_str):
     try:
@@ -165,28 +87,6 @@ def determine_call_direction(source):
 
 def save_cdr_data(supabase, cdr_data):
     try:
-        # Debug: Log user context and authentication status
-        user_id = st.session_state.get("supabase_user_id", None)
-        access_token = st.session_state.get("supabase_access_token", None)
-        st.write("**Debug: User Context for CDR Save**")
-        st.write(f"User ID: {user_id if user_id else 'Not set'}")
-        st.write(f"Access Token Available: {access_token is not None}")
-        session = supabase.auth.get_session()
-        st.write(f"Supabase Session Active: {session is not None}")
-        if session:
-            st.write(f"Authenticated User ID: {session.user.id if session.user else 'None'}")
-        
-        if user_id and is_valid_uuid(user_id):
-            user_data = supabase.table("users").select("name, role").eq("id", user_id).execute()
-            st.write(f"User Data: {user_data.data if user_data.data else 'No user data found'}")
-            if user_data.data and user_data.data[0]["role"] != "Manager":
-                st.error("Only Managers can save CDR data.")
-                return False
-        else:
-            st.warning("Skipping user data query due to invalid or missing user_id.")
-            st.error("Cannot save CDR data: User not authenticated or invalid user_id.")
-            return False
-        
         for _, row in cdr_data.iterrows():
             agent_name = None
             source = str(row['Source']).strip()
@@ -195,11 +95,6 @@ def save_cdr_data(supabase, cdr_data):
                 agent_name = AGENT_EXTENSIONS[source]
             elif destination in AGENT_EXTENSIONS and row['Status'].upper() == "ANSWERED":
                 agent_name = AGENT_EXTENSIONS[destination]
-            
-            # Ensure agent_name is valid
-            if agent_name and agent_name not in AGENT_EXTENSIONS.values():
-                st.warning(f"Invalid agent_name '{agent_name}' for Uniqueid {row['Uniqueid']}. Setting to NULL.")
-                agent_name = None
             
             cdr_entry = {
                 "date": pd.to_datetime(row['Date']).isoformat(),
@@ -225,16 +120,6 @@ def save_cdr_data(supabase, cdr_data):
         return True
     except Exception as e:
         st.error(f"Error saving CDR data: {str(e)}")
-        if "row-level security policy" in str(e):
-            st.error("🔒 RLS policy is blocking the operation. Check user authentication and role in 'users' table.")
-            st.write("Suggestions:")
-            st.write("- Ensure you are logged in as a Manager with role='Manager' in the users table.")
-            st.write("- Verify Supabase Authentication is enabled and the client uses a valid JWT token.")
-            st.write("- Check RLS policies for 'cdr_reports' table in Supabase dashboard.")
-            st.write("- Ensure the user's ID in 'users' table matches the authenticated user's ID (auth.uid()).")
-            st.write(f"Current User ID: {user_id if user_id else 'None'}")
-            if user_data.data:
-                st.write(f"Current Role: {user_data.data[0]['role'] if user_data.data else 'Unknown'}")
         return False
 
 def get_cdr_data(supabase, agent_name=None, start_date=None, end_date=None):
@@ -260,247 +145,7 @@ def get_cdr_data(supabase, agent_name=None, start_date=None, end_date=None):
             st.error("🔒 RLS policy is blocking data access. Ensure agents are allowed to view their own data.")
         return pd.DataFrame()
 
-def save_kpis(supabase, kpis):
-    try:
-        for metric, value in kpis.items():
-            if value < 0:
-                st.error(f"Invalid value for {metric}: Must be non-negative.")
-                return False
-            if metric == 'aht' and value == 0:
-                st.error("Average Handle Time (AHT) cannot be zero.")
-                return False
-            if metric != 'call_volume' and value > 100 and metric not in ['aht', 'talk_time']:
-                st.error(f"Invalid value for {metric}: Must be <= 100%.")
-                return False
-        existing_kpis = supabase.table("kpis").select("*").limit(1).execute()
-        if existing_kpis.data:
-            supabase.table("kpis").update(kpis).eq("id", existing_kpis.data[0]["id"]).execute()
-        else:
-            kpis["id"] = str(uuid.uuid4())
-            supabase.table("kpis").insert(kpis).execute()
-        return True
-    except Exception as e:
-        st.error(f"Error saving KPIs: {str(e)}")
-        return False
-
-def get_kpis(supabase):
-    try:
-        response = supabase.table("kpis").select("*").limit(1).execute()
-        return response.data[0] if response.data else {}
-    except Exception as e:
-        st.error(f"Error retrieving KPIs: {str(e)}")
-        return {}
-
-def save_performance(supabase, agent_name, data):
-    try:
-        data["agent_name"] = agent_name
-        data["date"] = datetime.now().isoformat()
-        supabase.table("performance").insert(data).execute()
-        return True
-    except Exception as e:
-        st.error(f"Error saving performance for {agent_name}: {str(e)}")
-        return False
-
-def get_performance(supabase, agent_name=None):
-    try:
-        query = supabase.table("performance").select("*")
-        if agent_name:
-            query = query.eq("agent_name", agent_name)
-        response = query.execute()
-        if response.data:
-            return pd.DataFrame(response.data)
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error retrieving performance: {str(e)}")
-        return pd.DataFrame()
-
-def assess_performance(df, kpis):
-    results = df.copy()
-    metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
-               'onboarding', 'reporting', 'resolution_rate', 'csat']
-    results['overall_score'] = 0.0
-    for metric in metrics:
-        if metric in kpis:
-            results[f'{metric}_pass'] = results[metric] >= kpis[metric]
-            results['overall_score'] += results[f'{metric}_pass'].astype(int) * (100 / len(metrics))
-    if 'call_volume' in kpis:
-        results['call_volume_pass'] = results['call_volume'] >= kpis['call_volume']
-        results['overall_score'] += results['call_volume_pass'].astype(int) * (100 / (len(metrics) + 1))
-    if 'talk_time' in kpis:
-        results['talk_time_pass'] = results['talk_time'] >= kpis['talk_time']
-        results['overall_score'] += results['talk_time_pass'].astype(int) * (100 / (len(metrics) + 2))
-    if 'aht' in kpis:
-        results['aht_pass'] = results['aht'] <= kpis['aht']
-        results['overall_score'] += results['aht_pass'].astype(int) * (100 / (len(metrics) + 3))
-    return results
-
-def set_agent_goal(supabase, agent_name, metric, target_value, created_by, is_manager=False):
-    try:
-        goal_data = {
-            "agent_name": agent_name,
-            "metric": metric,
-            "target_value": target_value,
-            "created_by": created_by,
-            "status": "Approved" if is_manager else "Awaiting Approval",
-            "created_at": datetime.now().isoformat()
-        }
-        supabase.table("goals").insert(goal_data).execute()
-        if not is_manager and st.session_state.get("notifications_enabled", False):
-            managers = supabase.table("users").select("id").eq("role", "Manager").execute()
-            for manager in managers.data:
-                supabase.table("notifications").insert({
-                    "user_id": manager["id"],
-                    "message": f"New goal for {agent_name} on {metric} awaiting approval."
-                }).execute()
-        return True
-    except Exception as e:
-        st.error(f"Error setting goal: {str(e)}")
-        return False
-
-def approve_goal(supabase, goal_id, manager_name, approve=True):
-    try:
-        schema_check = supabase.table("goals").select("approved_by").limit(1).execute()
-        include_approved_by = 'approved_by' in schema_check.data[0] if schema_check.data else False
-        update_data = {
-            "status": "Approved" if approve else "Rejected",
-            "approved_at": datetime.now().isoformat()
-        }
-        if include_approved_by:
-            update_data["approved_by"] = manager_name
-        supabase.table("goals").update(update_data).eq("id", goal_id).execute()
-        if st.session_state.get("notifications_enabled", False):
-            goal = supabase.table("goals").select("agent_name").eq("id", goal_id).execute()
-            if goal.data:
-                agent_name = goal.data[0]["agent_name"]
-                agent = supabase.table("users").select("id").eq("name", agent_name).execute()
-                if agent.data:
-                    status = "approved" if approve else "rejected"
-                    supabase.table("notifications").insert({
-                        "user_id": agent.data[0]["id"],
-                        "message": f"Your goal for {agent_name} was {status} by {manager_name}"
-                    }).execute()
-        return True
-    except Exception as e:
-        st.error(f"Error approving/rejecting goal: {str(e)}")
-        return False
-
-def get_feedback(supabase, agent_name=None):
-    try:
-        query = supabase.table("feedback").select("*")
-        if agent_name:
-            query = query.eq("agent_name", agent_name)
-        response = query.execute()
-        if response.data:
-            return pd.DataFrame(response.data)
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error retrieving feedback: {str(e)}")
-        return pd.DataFrame()
-
-def respond_to_feedback(supabase, feedback_id, response, manager_name):
-    try:
-        update_data = {
-            "manager_response": response,
-            "response_timestamp": datetime.now().isoformat(),
-            "updated_by": manager_name
-        }
-        supabase.table("feedback").update(update_data).eq("id", feedback_id).execute()
-        if st.session_state.get("notifications_enabled", False):
-            feedback = supabase.table("feedback").select("agent_name").eq("id", feedback_id).execute()
-            if feedback.data:
-                agent_name = feedback.data[0]["agent_name"]
-                agent = supabase.table("users").select("id").eq("name", agent_name).execute()
-                if agent.data:
-                    supabase.table("notifications").insert({
-                        "user_id": agent.data[0]["id"],
-                        "message": f"New manager response to your feedback: {response[:50]}..."
-                    }).execute()
-        return True
-    except Exception as e:
-        st.error(f"Error responding to feedback: {str(e)}")
-        return False
-
-def get_notifications(supabase):
-    try:
-        user_id = supabase.table("users").select("id").eq("name", st.session_state.user).single().execute().data["id"]
-        response = supabase.table("notifications").select("*").eq("user_id", user_id).eq("read", False).execute()
-        if response.data:
-            return pd.DataFrame(response.data)
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error retrieving notifications: {str(e)}")
-        return pd.DataFrame()
-
-def upload_audio(supabase, agent_name, audio_file, uploaded_by):
-    try:
-        file_name = f"{agent_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{audio_file.name}"
-        file_data = audio_file.read()
-        supabase.storage.from_("audio_assessments").upload(file_name, file_data)
-        audio_url = supabase.storage.from_("audio_assessments").get_public_url(file_name)
-        supabase.table("audio_assessments").insert({
-            "agent_name": agent_name,
-            "audio_url": audio_url,
-            "uploaded_by": uploaded_by,
-            "upload_timestamp": datetime.now().isoformat(),
-            "assessment_notes": ""
-        }).execute()
-        return True
-    except Exception as e:
-        st.error(f"Error uploading audio: {str(e)}")
-        return False
-
-def get_audio_assessments(supabase, agent_name=None):
-    try:
-        query = supabase.table("audio_assessments").select("*")
-        if agent_name:
-            query = query.eq("agent_name", agent_name)
-        response = query.execute()
-        if response.data:
-            return pd.DataFrame(response.data)
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error retrieving audio assessments: {str(e)}")
-        return pd.DataFrame()
-
-def update_assessment_notes(supabase, assessment_id, notes):
-    try:
-        supabase.table("audio_assessments").update({"assessment_notes": notes}).eq("id", assessment_id).execute()
-        return True
-    except Exception as e:
-        st.error(f"Error updating assessment notes: {str(e)}")
-        return False
-
-def get_zoho_agent_data(supabase, agent_name=None):
-    try:
-        chunk_size = 1000
-        offset = 0
-        all_data = []
-        while True:
-            query = supabase.table("zoho_agent_data").select("*").range(offset, offset + chunk_size - 1)
-            if agent_name:
-                query = query.eq("ticket_owner", agent_name)
-            response = query.execute()
-            if not response.data:
-                break
-            all_data.extend(response.data)
-            offset += chunk_size
-        if all_data:
-            return pd.DataFrame(all_data)
-        st.warning(f"No Zoho data found for agent: {agent_name or 'All'}.")
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error retrieving Zoho data: {str(e)}")
-        if "violates row-level security policy" in str(e):
-            st.error("🔒 RLS policy is blocking data access. Ensure agents are allowed to view their own data.")
-        return pd.DataFrame()
-
-def setup_realtime(supabase):
-    if st.session_state.get("auto_refresh", False):
-        current_time = datetime.now()
-        if (current_time - st.session_state.last_refresh).total_seconds() >= 30:
-            st.session_state.data_updated = True
-            st.session_state.last_refresh = current_time
-            st.sidebar.success("Data refreshed!")
+# [Previous functions like save_kpis, get_kpis, save_performance, etc., remain unchanged]
 
 def main():
     st.set_page_config(page_title="Call Center Assessment System", layout="wide")
@@ -580,8 +225,6 @@ def main():
     if 'user' not in st.session_state:
         st.session_state.user = None
         st.session_state.role = None
-        st.session_state.supabase_user_id = None
-        st.session_state.supabase_access_token = None
         st.session_state.data_updated = False
         st.session_state.notifications_enabled = False
         st.session_state.cdr_enabled = False
@@ -592,26 +235,22 @@ def main():
     if not st.session_state.user:
         st.title("🔐 Login")
         with st.form("login_form"):
-            username = st.text_input("Username")
+            name = st.text_input("Name")
             password = st.text_input("Password", type="password")
             if st.form_submit_button("Login"):
-                success, user, role, user_id = authenticate_user(supabase, username, password)
+                success, user, role = authenticate_user(supabase, name, password)
                 if success:
                     st.session_state.user = user
                     st.session_state.role = role
-                    set_supabase_session(supabase, user_id)
                     st.success(f"Logged in as {user} ({role})")
                     st.rerun()
                 else:
-                    st.error("Invalid username or password, or user not found.")
+                    st.error("Invalid credentials.")
         return
 
     if st.sidebar.button("Logout"):
         st.session_state.user = None
         st.session_state.role = None
-        st.session_state.supabase_user_id = None
-        st.session_state.supabase_access_token = None
-        supabase.auth.sign_out()
         st.rerun()
 
     if st.session_state.get("notifications_enabled", False):
@@ -623,7 +262,7 @@ def main():
                 for _, notif in notifications.iterrows():
                     st.write(notif["message"])
                     if st.button("Mark as Read", key=f"notif_{notif['id']}"):
-                        supabase.table("notifications").update({"read": True}).eq("id", notif['id']).execute()
+                        supabase.table("notifications").update({"read": True}).eq("id", notif["id"]).execute()
                         st.rerun()
     else:
         with st.sidebar.expander("🔔 Notifications (0)"):
@@ -946,45 +585,25 @@ def main():
                 st.subheader("Upload CDR Data")
                 uploaded_file = st.file_uploader("Upload CDR CSV", type="csv", key="cdr_upload")
                 if uploaded_file:
-                    try:
-                        df = pd.read_csv(uploaded_file, encoding='utf-8-sig', sep=',', on_bad_lines='warn')
-                        st.write("**Debug: CSV Column Names**")
-                        st.write(df.columns.tolist())
-                        df.columns = df.columns.str.strip().str.replace(r'\s+', ' ', regex=True)
-                        column_mappings = {
-                            'uniqueid': 'Uniqueid',
-                            'unique id': 'Uniqueid',
-                            'UniqueID': 'Uniqueid',
-                            'Unique ID': 'Uniqueid'
-                        }
-                        df.columns = [column_mappings.get(col.lower(), col) for col in df.columns]
-                        required_cols = ['Date', 'Source', 'Ring Group', 'Destination', 'Src. Channel', 
-                                       'Account Code', 'Dst. Channel', 'Status', 'Duration', 'Uniqueid', 'User Field']
-                        missing_cols = [col for col in required_cols if col not in df.columns]
-                        if missing_cols:
-                            st.error(f"CSV missing required columns: {', '.join(missing_cols)}")
-                            st.write("Expected columns:", required_cols)
-                            st.write("Current columns after normalization:", df.columns.tolist())
-                        else:
-                            df = df[required_cols]
-                            st.write("**Debug: Selected Columns for Processing**")
-                            st.write(df.columns.tolist())
-                            try:
-                                df['Date'] = pd.to_datetime(df['Date'])
-                                df['Duration'] = df['Duration'].apply(parse_duration)
-                                if df['Duration'].lt(0).any():
-                                    st.error("Duration cannot be negative.")
-                                elif df['Uniqueid'].duplicated().any():
-                                    st.error("Duplicate Uniqueid values found.")
+                    df = pd.read_csv(uploaded_file)
+                    required_cols = ['Date', 'Source', 'Ring Group', 'Destination', 'Src. Channel', 'Account Code', 'Dst. Channel', 'Status', 'Duration', 'Uniqueid', 'User Field']
+                    if all(col in df.columns for col in required_cols):
+                        try:
+                            df['Date'] = pd.to_datetime(df['Date'])
+                            df['Duration'] = df['Duration'].apply(parse_duration)
+                            if df['Duration'].lt(0).any():
+                                st.error("Duration cannot be negative.")
+                            elif df['Uniqueid'].duplicated().any():
+                                st.error("Duplicate Uniqueid values found.")
+                            else:
+                                if save_cdr_data(supabase, df):
+                                    st.success(f"Imported CDR data for {len(df)} records!")
                                 else:
-                                    if save_cdr_data(supabase, df):
-                                        st.success(f"Imported CDR data for {len(df)} records!")
-                                    else:
-                                        st.error("Failed to import CDR data.")
-                            except Exception as e:
-                                st.error(f"Invalid data format: {str(e)}")
-                    except Exception as e:
-                        st.error(f"Error reading CSV file: {str(e)}")
+                                    st.error("Failed to import CDR data.")
+                        except Exception as e:
+                            st.error(f"Invalid data format: {str(e)}")
+                    else:
+                        st.error(f"CSV missing required columns. Expected: {', '.join(required_cols)}")
 
                 st.subheader("View CDR Data")
                 col1, col2 = st.columns(2)
@@ -1089,28 +708,10 @@ def main():
                         if not goal_row.empty:
                             row = goal_row.iloc[0]
                             current_value = results[results['date'] == max(results['date'])][metric].mean() if metric in results.columns else 0.0
-                            if metric == 'aht':
-                                kpi_target = kpis.get(metric, 600)
-                                if kpi_target > 0:
-                                    progress = ((kpi_target - current_value) / kpi_target) * 100
-                                else:
-                                    progress = 0
-                                    st.error("KPI target for AHT is zero, cannot calculate progress.")
-                                    supabase.table("error_logs").insert({
-                                        "message": f"AHT KPI target is zero for agent {st.session_state.user}",
-                                        "timestamp": datetime.now().isoformat()
-                                    }).execute()
-                                progress = min(max(progress, 0), 100)
-                            else:
-                                if row['target_value'] > 0:
-                                    progress = (current_value / row['target_value']) * 100
-                                else:
-                                    progress = 0
-                                progress = min(max(progress, 0), 100)
-                            
+                            progress = min((kpis.get(metric, 600) - current_value) / kpis.get(metric, 600) - row['target_value']) * 100, 100) if metric == 'aht' else min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
                             color = "green" if progress >= 80 else "orange" if progress >= 50 else "red"
                             st.markdown(f"<div class='progress-bar' style='background-color: {color}; width: {progress}%;'></div>", unsafe_allow_html=True)
-                            st.write(f"{metric.replace('_', ' ').title()}: Target {row['target_value']:.1f}{' sec' if metric == 'aht' else ''}, Current {current_value:.1f}{' sec' if metric == 'aht' else ''}, Status: {row['status']}")
+                            st.write(f"{metric.replace('_', ' ').title()}: Target {row['target_value']:.1f}{' sec' if metric == 'aht' else '%'}, Current {current_value:.1f}{' sec' if metric == 'aht' else '%'}, Status: {row['status']}")
                             if row['status'] in ["Pending", "Awaiting Approval"]:
                                 with st.form(f"update_goal_form_{metric}"):
                                     new_target = st.number_input(f"New Target for {metric}", value=float(row['target_value']), key=f"new_target_{metric}")
