@@ -25,7 +25,11 @@ def init_supabase():
         key = st.secrets["supabase"]["key"]
         if not url.startswith("https://"):
             url = f"https://{url}"
-        return create_client(url, key)
+        client = create_client(url, key)
+        # Check if using anonymous key
+        if key == st.secrets["supabase"].get("anon_key", ""):
+            st.warning("Using anonymous Supabase key. RLS policies for 'authenticated' role may fail.")
+        return client
     except Exception as e:
         st.error(f"Failed to connect to Supabase: {str(e)}")
         raise e
@@ -34,17 +38,32 @@ def authenticate_user(supabase, name, password):
     # TODO: Replace with Supabase Authentication for secure password handling
     # See https://supabase.com/docs/guides/auth
     try:
-        response = supabase.table("users").select("name, role, password").eq("name", name).execute()
+        response = supabase.table("users").select("id, name, role, password").eq("name", name).execute()
         if not response.data:
-            return False, None, None
+            return False, None, None, None
         user_data = response.data[0]
         if user_data["password"] == password:
-            return True, user_data["name"], user_data["role"]
+            # Simulate setting session for authenticated user (replace with auth.sign_in_with_password)
+            st.session_state.supabase_user_id = user_data["id"]
+            return True, user_data["name"], user_data["role"], user_data["id"]
         else:
-            return False, None, None
+            return False, None, None, None
     except Exception as e:
         st.error(f"Authentication failed: {str(e)}")
-        return False, None, None
+        return False, None, None, None
+
+def set_supabase_session(supabase, user_id):
+    # Placeholder for setting authenticated session
+    # In production, use supabase.auth.sign_in_with_password to get JWT
+    # For now, store user_id in session state for RLS debugging
+    try:
+        # Debug: Check current user context
+        st.session_state.supabase_user_id = user_id
+        # TODO: Implement JWT-based authentication
+        # response = supabase.auth.sign_in_with_password({"email": email, "password": password})
+        # supabase.auth.set_session(response.session.access_token)
+    except Exception as e:
+        st.error(f"Failed to set Supabase session: {str(e)}")
 
 def check_db(supabase):
     required_tables = ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications", "audio_assessments", "cdr_reports"]
@@ -105,6 +124,13 @@ def determine_call_direction(source):
 
 def save_cdr_data(supabase, cdr_data):
     try:
+        # Debug: Log user context
+        user_id = st.session_state.get("supabase_user_id", "Unknown")
+        user_data = supabase.table("users").select("name, role").eq("id", user_id).execute()
+        st.write("**Debug: User Context for CDR Save**")
+        st.write(f"User ID: {user_id}")
+        st.write(f"User Data: {user_data.data if user_data.data else 'No user data found'}")
+        
         for _, row in cdr_data.iterrows():
             agent_name = None
             source = str(row['Source']).strip()
@@ -113,6 +139,11 @@ def save_cdr_data(supabase, cdr_data):
                 agent_name = AGENT_EXTENSIONS[source]
             elif destination in AGENT_EXTENSIONS and row['Status'].upper() == "ANSWERED":
                 agent_name = AGENT_EXTENSIONS[destination]
+            
+            # Ensure agent_name is valid
+            if agent_name and agent_name not in AGENT_EXTENSIONS.values():
+                st.warning(f"Invalid agent_name '{agent_name}' for Uniqueid {row['Uniqueid']}. Setting to NULL.")
+                agent_name = None
             
             cdr_entry = {
                 "date": pd.to_datetime(row['Date']).isoformat(),
@@ -138,6 +169,12 @@ def save_cdr_data(supabase, cdr_data):
         return True
     except Exception as e:
         st.error(f"Error saving CDR data: {str(e)}")
+        if "row-level security policy" in str(e):
+            st.error("🔒 RLS policy is blocking the operation. Check user authentication and role in 'users' table.")
+            st.write("Suggestions:")
+            st.write("- Ensure you are logged in as a Manager with role='Manager' in the users table.")
+            st.write("- Verify Supabase Authentication is enabled and the client uses a JWT token.")
+            st.write("- Check RLS policies for 'cdr_reports' table in Supabase dashboard.")
         return False
 
 def get_cdr_data(supabase, agent_name=None, start_date=None, end_date=None):
@@ -483,6 +520,7 @@ def main():
     if 'user' not in st.session_state:
         st.session_state.user = None
         st.session_state.role = None
+        st.session_state.supabase_user_id = None
         st.session_state.data_updated = False
         st.session_state.notifications_enabled = False
         st.session_state.cdr_enabled = False
@@ -496,10 +534,11 @@ def main():
             name = st.text_input("Name")
             password = st.text_input("Password", type="password")
             if st.form_submit_button("Login"):
-                success, user, role = authenticate_user(supabase, name, password)
+                success, user, role, user_id = authenticate_user(supabase, name, password)
                 if success:
                     st.session_state.user = user
                     st.session_state.role = role
+                    set_supabase_session(supabase, user_id)
                     st.success(f"Logged in as {user} ({role})")
                     st.rerun()
                 else:
@@ -509,6 +548,8 @@ def main():
     if st.sidebar.button("Logout"):
         st.session_state.user = None
         st.session_state.role = None
+        st.session_state.supabase_user_id = None
+        supabase.auth.sign_out()
         st.rerun()
 
     if st.session_state.get("notifications_enabled", False):
