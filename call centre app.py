@@ -8,6 +8,7 @@ from supabase import create_client, Client
 import uuid
 import re
 import io
+import uuid as uuid_lib
 
 # Agent extension mapping
 AGENT_EXTENSIONS = {
@@ -18,6 +19,13 @@ AGENT_EXTENSIONS = {
     "1006": "Amulet Kyokusiima",
     "1010": "Oyo Jacob Humphrey"
 }
+
+def is_valid_uuid(val):
+    try:
+        uuid_lib.UUID(str(val))
+        return True
+    except ValueError:
+        return False
 
 def init_supabase():
     try:
@@ -34,36 +42,33 @@ def init_supabase():
         st.error(f"Failed to connect to Supabase: {str(e)}")
         raise e
 
-def authenticate_user(supabase, name, password):
-    # TODO: Replace with Supabase Authentication for secure password handling
-    # See https://supabase.com/docs/guides/auth
+def authenticate_user(supabase, email, password):
     try:
-        response = supabase.table("users").select("id, name, role, password").eq("name", name).execute()
-        if not response.data:
-            return False, None, None, None
-        user_data = response.data[0]
-        if user_data["password"] == password:
-            # Simulate setting session for authenticated user (replace with auth.sign_in_with_password)
-            st.session_state.supabase_user_id = user_data["id"]
-            return True, user_data["name"], user_data["role"], user_data["id"]
+        # Use Supabase Authentication
+        response = supabase.auth.sign_in_with_password({"email": email, "password": password})
+        if response.user:
+            # Fetch user data from users table
+            user_data = supabase.table("users").select("id, name, role").eq("id", response.user.id).single().execute()
+            if user_data.data:
+                supabase.auth.set_session(response.session.access_token)
+                st.session_state.supabase_user_id = user_data.data["id"]
+                return True, user_data.data["name"], user_data.data["role"], user_data.data["id"]
+            else:
+                st.error("User not found in users table. Please ensure your account is set up.")
+                return False, None, None, None
         else:
+            st.error("Invalid credentials.")
             return False, None, None, None
     except Exception as e:
         st.error(f"Authentication failed: {str(e)}")
         return False, None, None, None
 
 def set_supabase_session(supabase, user_id):
-    # Placeholder for setting authenticated session
-    # In production, use supabase.auth.sign_in_with_password to get JWT
-    # For now, store user_id in session state for RLS debugging
-    try:
-        # Debug: Check current user context
+    # Ensure session is set for authenticated user
+    if is_valid_uuid(user_id):
         st.session_state.supabase_user_id = user_id
-        # TODO: Implement JWT-based authentication
-        # response = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        # supabase.auth.set_session(response.session.access_token)
-    except Exception as e:
-        st.error(f"Failed to set Supabase session: {str(e)}")
+    else:
+        st.error(f"Invalid user_id format: {user_id}")
 
 def check_db(supabase):
     required_tables = ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications", "audio_assessments", "cdr_reports"]
@@ -125,11 +130,15 @@ def determine_call_direction(source):
 def save_cdr_data(supabase, cdr_data):
     try:
         # Debug: Log user context
-        user_id = st.session_state.get("supabase_user_id", "Unknown")
-        user_data = supabase.table("users").select("name, role").eq("id", user_id).execute()
+        user_id = st.session_state.get("supabase_user_id", None)
         st.write("**Debug: User Context for CDR Save**")
-        st.write(f"User ID: {user_id}")
-        st.write(f"User Data: {user_data.data if user_data.data else 'No user data found'}")
+        st.write(f"User ID: {user_id if user_id else 'Not set'}")
+        
+        if user_id and is_valid_uuid(user_id):
+            user_data = supabase.table("users").select("name, role").eq("id", user_id).execute()
+            st.write(f"User Data: {user_data.data if user_data.data else 'No user data found'}")
+        else:
+            st.warning("Skipping user data query due to invalid or missing user_id.")
         
         for _, row in cdr_data.iterrows():
             agent_name = None
@@ -175,6 +184,8 @@ def save_cdr_data(supabase, cdr_data):
             st.write("- Ensure you are logged in as a Manager with role='Manager' in the users table.")
             st.write("- Verify Supabase Authentication is enabled and the client uses a JWT token.")
             st.write("- Check RLS policies for 'cdr_reports' table in Supabase dashboard.")
+        elif "invalid input syntax for type uuid" in str(e):
+            st.error("🔍 Invalid UUID provided. Ensure the user is properly authenticated and has a valid UUID in the users table.")
         return False
 
 def get_cdr_data(supabase, agent_name=None, start_date=None, end_date=None):
@@ -531,10 +542,10 @@ def main():
     if not st.session_state.user:
         st.title("🔐 Login")
         with st.form("login_form"):
-            name = st.text_input("Name")
+            email = st.text_input("Email")
             password = st.text_input("Password", type="password")
             if st.form_submit_button("Login"):
-                success, user, role, user_id = authenticate_user(supabase, name, password)
+                success, user, role, user_id = authenticate_user(supabase, email, password)
                 if success:
                     st.session_state.user = user
                     st.session_state.role = role
@@ -542,7 +553,7 @@ def main():
                     st.success(f"Logged in as {user} ({role})")
                     st.rerun()
                 else:
-                    st.error("Invalid credentials.")
+                    st.error("Invalid credentials or user not found.")
         return
 
     if st.sidebar.button("Logout"):
@@ -618,7 +629,7 @@ def main():
                         'attendance': attendance, 'quality_score': quality_score, 'product_knowledge': product_knowledge,
                         'contact_success_rate': contact_success_rate, 'onboarding': onboarding, 'reporting': reporting,
                         'talk_time': talk_time, 'resolution_rate': resolution_rate, 'aht': aht, 'csat': csat,
-                        'call_volume': call_volume
+                        'call_volume': haja
                     }
                     if save_kpis(supabase, new_kpis):
                         st.success("KPIs saved!")
