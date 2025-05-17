@@ -708,7 +708,7 @@ def main():
                         if not goal_row.empty:
                             row = goal_row.iloc[0]
                             current_value = results[results['date'] == max(results['date'])][metric].mean() if metric in results.columns else 0.0
-                            progress = min((kpis.get(metric, 600) - current_value) / kpis.get(metric, 600) - row['target_value']) * 100, 100) if metric == 'aht' else min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
+                            progress = min(((kpis.get(metric, 600) - current_value) / kpis.get(metric, 600) - row['target_value']) * 100, 100) if metric == 'aht' else min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
                             color = "green" if progress >= 80 else "orange" if progress >= 50 else "red"
                             st.markdown(f"<div class='progress-bar' style='background-color: {color}; width: {progress}%;'></div>", unsafe_allow_html=True)
                             st.write(f"{metric.replace('_', ' ').title()}: Target {row['target_value']:.1f}{' sec' if metric == 'aht' else '%'}, Current {current_value:.1f}{' sec' if metric == 'aht' else '%'}, Status: {row['status']}")
