@@ -46,6 +46,43 @@ def init_supabase():
         st.error(f"Failed to connect to Supabase: {str(e)}")
         raise e
 
+def check_db(supabase):
+    required_tables = ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications", "audio_assessments", "cdr_reports"]
+    critical_tables = ["users", "goals", "feedback", "performance"]
+    missing_critical = []
+    missing_non_critical = []
+    
+    for table in required_tables:
+        try:
+            supabase.table(table).select("count").limit(1).execute()
+        except Exception as e:
+            if 'relation' in str(e).lower() and 'does not exist' in str(e).lower():
+                if table in critical_tables:
+                    missing_critical.append(table)
+                else:
+                    missing_non_critical.append(table)
+            else:
+                st.sidebar.warning(f"Error accessing {table}: {str(e)}")
+    
+    if missing_critical:
+        st.sidebar.error(f"Critical tables missing: {', '.join(missing_critical)}. Please create them to use the app.")
+        return False
+    if missing_non_critical:
+        st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}. Some features may be unavailable.")
+        if "notifications" in missing_non_critical:
+            st.session_state.notifications_enabled = False
+        else:
+            st.session_state.notifications_enabled = True
+        if "cdr_reports" in missing_non_critical:
+            st.session_state.cdr_enabled = False
+        else:
+            st.session_state.cdr_enabled = True
+    else:
+        st.session_state.notifications_enabled = True
+        st.session_state.cdr_enabled = True
+        st.sidebar.success("✅ Connected to database successfully")
+    return True
+
 def authenticate_user(supabase, email, password):
     try:
         # Use Supabase Authentication
@@ -54,13 +91,16 @@ def authenticate_user(supabase, email, password):
             # Fetch user data from users table
             user_data = supabase.table("users").select("id, name, role").eq("id", response.user.id).single().execute()
             if user_data.data:
+                # Set session explicitly
                 supabase.auth.set_session(response.session.access_token)
                 st.session_state.supabase_user_id = user_data.data["id"]
+                st.session_state.supabase_access_token = response.session.access_token
                 # Debug: Log authentication details
                 st.write("**Debug: Authentication**")
                 st.write(f"User ID: {user_data.data['id']}")
                 st.write(f"Name: {user_data.data['name']}")
                 st.write(f"Role: {user_data.data['role']}")
+                st.write(f"Session Set: {supabase.auth.get_session() is not None}")
                 return True, user_data.data["name"], user_data.data["role"], user_data.data["id"]
             else:
                 st.error("User not found in users table. Please ensure your account is set up.")
@@ -72,12 +112,40 @@ def authenticate_user(supabase, email, password):
         st.error(f"Authentication failed: {str(e)}")
         return False, None, None, None
 
+def set_supabase_session(supabase, user_id):
+    if is_valid_uuid(user_id):
+        st.session_state.supabase_user_id = user_id
+    else:
+        st.error(f"Invalid user_id format: {user_id}")
+
+def parse_duration(duration_str):
+    try:
+        match = re.match(r'(\d+)s', str(duration_str))
+        if match:
+            return int(match.group(1))
+        return 0
+    except Exception as e:
+        st.error(f"Error parsing duration '{duration_str}': {str(e)}")
+        return 0
+
+def determine_call_direction(source):
+    source_str = str(source).strip()
+    if source_str in AGENT_EXTENSIONS:
+        return "outbound"
+    elif source_str.startswith("+"):
+        return "inbound"
+    elif source_str.startswith("8001"):
+        return "queue"
+    return "unknown"
+
 def save_cdr_data(supabase, cdr_data):
     try:
         # Debug: Log user context and authentication status
         user_id = st.session_state.get("supabase_user_id", None)
+        access_token = st.session_state.get("supabase_access_token", None)
         st.write("**Debug: User Context for CDR Save**")
         st.write(f"User ID: {user_id if user_id else 'Not set'}")
+        st.write(f"Access Token Available: {access_token is not None}")
         session = supabase.auth.get_session()
         st.write(f"Supabase Session Active: {session is not None}")
         if session:
@@ -143,6 +211,30 @@ def save_cdr_data(supabase, cdr_data):
             if user_data.data:
                 st.write(f"Current Role: {user_data.data[0]['role'] if user_data.data else 'Unknown'}")
         return False
+
+def get_cdr_data(supabase, agent_name=None, start_date=None, end_date=None):
+    try:
+        query = supabase.table("cdr_reports").select("*")
+        if agent_name:
+            query = query.eq("agent_name", agent_name)
+        if start_date:
+            query = query.gte("date", start_date.isoformat())
+        if end_date:
+            query = query.lte("date", end_date.isoformat())
+        response = query.execute()
+        if response.data:
+            df = pd.DataFrame(response.data)
+            df['date'] = pd.to_datetime(df['date'])
+            df['duration'] = pd.to_numeric(df['duration'], errors='coerce').fillna(0).astype(int)
+            return df
+        st.warning(f"No CDR data found for agent: {agent_name or 'All'}.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error retrieving CDR data: {str(e)}")
+        if "violates row-level security policy" in str(e):
+            st.error("🔒 RLS policy is blocking data access. Ensure agents are allowed to view their own data.")
+        return pd.DataFrame()
+
 def save_kpis(supabase, kpis):
     try:
         for metric, value in kpis.items():
@@ -464,6 +556,7 @@ def main():
         st.session_state.user = None
         st.session_state.role = None
         st.session_state.supabase_user_id = None
+        st.session_state.supabase_access_token = None
         st.session_state.data_updated = False
         st.session_state.notifications_enabled = False
         st.session_state.cdr_enabled = False
@@ -492,6 +585,7 @@ def main():
         st.session_state.user = None
         st.session_state.role = None
         st.session_state.supabase_user_id = None
+        st.session_state.supabase_access_token = None
         supabase.auth.sign_out()
         st.rerun()
 
@@ -561,7 +655,7 @@ def main():
                         'attendance': attendance, 'quality_score': quality_score, 'product_knowledge': product_knowledge,
                         'contact_success_rate': contact_success_rate, 'onboarding': onboarding, 'reporting': reporting,
                         'talk_time': talk_time, 'resolution_rate': resolution_rate, 'aht': aht, 'csat': csat,
-                        'call_volume': haja
+                        'call_volume': call_volume
                     }
                     if save_kpis(supabase, new_kpis):
                         st.success("KPIs saved!")
@@ -828,14 +922,9 @@ def main():
                 uploaded_file = st.file_uploader("Upload CDR CSV", type="csv", key="cdr_upload")
                 if uploaded_file:
                     try:
-                        # Read CSV with explicit encoding and flexible delimiter
                         df = pd.read_csv(uploaded_file, encoding='utf-8-sig', sep=',', on_bad_lines='warn')
-                        
-                        # Debug: Show original column names
                         st.write("**Debug: CSV Column Names**")
                         st.write(df.columns.tolist())
-                        
-                        # Normalize column names: strip whitespace, handle case sensitivity
                         df.columns = df.columns.str.strip().str.replace(r'\s+', ' ', regex=True)
                         column_mappings = {
                             'uniqueid': 'Uniqueid',
@@ -844,26 +933,17 @@ def main():
                             'Unique ID': 'Uniqueid'
                         }
                         df.columns = [column_mappings.get(col.lower(), col) for col in df.columns]
-                        
-                        # Required columns
                         required_cols = ['Date', 'Source', 'Ring Group', 'Destination', 'Src. Channel', 
                                        'Account Code', 'Dst. Channel', 'Status', 'Duration', 'Uniqueid', 'User Field']
-                        
-                        # Check for missing columns
                         missing_cols = [col for col in required_cols if col not in df.columns]
                         if missing_cols:
                             st.error(f"CSV missing required columns: {', '.join(missing_cols)}")
                             st.write("Expected columns:", required_cols)
                             st.write("Current columns after normalization:", df.columns.tolist())
-                            st.write("Please ensure column names match exactly (check for case sensitivity or extra spaces).")
                         else:
-                            # Select only required columns
                             df = df[required_cols]
-                            
-                            # Debug: Confirm selected columns
                             st.write("**Debug: Selected Columns for Processing**")
                             st.write(df.columns.tolist())
-                            
                             try:
                                 df['Date'] = pd.to_datetime(df['Date'])
                                 df['Duration'] = df['Duration'].apply(parse_duration)
@@ -880,7 +960,6 @@ def main():
                                 st.error(f"Invalid data format: {str(e)}")
                     except Exception as e:
                         st.error(f"Error reading CSV file: {str(e)}")
-                        st.write("Try checking the CSV for correct delimiter (comma), encoding (UTF-8), or malformed rows.")
 
                 st.subheader("View CDR Data")
                 col1, col2 = st.columns(2)
@@ -985,11 +1064,10 @@ def main():
                         if not goal_row.empty:
                             row = goal_row.iloc[0]
                             current_value = results[results['date'] == max(results['date'])][metric].mean() if metric in results.columns else 0.0
-                            # Calculate progress
                             if metric == 'aht':
                                 kpi_target = kpis.get(metric, 600)
                                 if kpi_target > 0:
-                                    progress = ((kpi_target - current_value) / kpi_target - row['target_value']) * 100
+                                    progress = ((kpi_target - current_value) / kpi_target) * 100
                                 else:
                                     progress = 0
                                     st.error("KPI target for AHT is zero, cannot calculate progress.")
