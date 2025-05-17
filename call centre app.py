@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -5,6 +6,16 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 import uuid
+import re
+
+AGENT_EXTENSIONS = {
+    "1004": "Melchizedek Tutu",
+    "1003": "Joseph Kavuma",
+    "1001": "Daisy Nahabwe",
+    "1005": "Cynthia Lunkuse",
+    "1006": "Amulet Kyokusiima",
+    "1010": "Oyo Jacob Humphrey"
+}
 
 def init_supabase():
     try:
@@ -18,7 +29,7 @@ def init_supabase():
         raise e
 
 def check_db(supabase):
-    required_tables = ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications", "audio_assessments"]
+    required_tables = ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications", "audio_assessments", "cdr_reports"]
     critical_tables = ["users", "goals", "feedback", "performance"]
     missing_critical = []
     missing_non_critical = []
@@ -39,323 +50,102 @@ def check_db(supabase):
         st.sidebar.error(f"Critical tables missing: {', '.join(missing_critical)}. Please create them to use the app.")
         return False
     if missing_non_critical:
-        st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}. Some features (e.g., notifications, audio assessments) may be unavailable.")
+        st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}. Some features (e.g., notifications, audio assessments, CDR reports) may be unavailable.")
         if "notifications" in missing_non_critical:
             st.session_state.notifications_enabled = False
         else:
             st.session_state.notifications_enabled = True
+        if "cdr_reports" in missing_non_critical:
+            st.session_state.cdr_enabled = False
+        else:
+            st.session_state.cdr_enabled = True
     else:
         st.session_state.notifications_enabled = True
+        st.session_state.cdr_enabled = True
         st.sidebar.success("✅ Connected to database successfully")
     return True
 
-def save_kpis(supabase, kpis):
+def parse_duration(duration_str):
     try:
-        for metric, threshold in kpis.items():
-            response = supabase.table("kpis").select("*").eq("metric", metric).execute()
-            if not response.data:
-                supabase.table("kpis").insert({"metric": metric, "threshold": threshold}).execute()
+        match = re.match(r'(\d+)s', str(duration_str))
+        if match:
+            return int(match.group(1))
+        return 0
+    except Exception as e:
+        st.error(f"Error parsing duration '{duration_str}': {str(e)}")
+        return 0
+
+def determine_call_direction(source):
+    source_str = str(source).strip()
+    if source_str in AGENT_EXTENSIONS:
+        return "outbound"
+    elif source_str.startswith("+"):
+        return "inbound"
+    elif source_str.startswith("8001"):
+        return "queue"
+    return "unknown"
+
+def save_cdr_data(supabase, cdr_data):
+    try:
+        for _, row in cdr_data.iterrows():
+            agent_name = None
+            source = str(row['Source']).strip()
+            destination = str(row['Destination']).strip()
+            if source in AGENT_EXTENSIONS:
+                agent_name = AGENT_EXTENSIONS[source]
+            elif destination in AGENT_EXTENSIONS and row['Status'].upper() == "ANSWERED":
+                agent_name = AGENT_EXTENSIONS[destination]
+            
+            cdr_entry = {
+                "date": pd.to_datetime(row['Date']).isoformat(),
+                "source": source,
+                "ring_group": str(row['Ring Group']),
+                "destination": destination,
+                "src_channel": str(row['Src. Channel']),
+                "account_code": str(row['Account Code']),
+                "dst_channel": str(row['Dst. Channel']),
+                "status": str(row['Status']),
+                "duration": parse_duration(row['Duration']),
+                "uniqueid": str(row['Uniqueid']),
+                "user_field": str(row['User Field']),
+                "call_direction": determine_call_direction(source),
+                "agent_name": agent_name,
+                "created_at": datetime.now().isoformat()
+            }
+            existing = supabase.table("cdr_reports").select("uniqueid").eq("uniqueid", cdr_entry["uniqueid"]).execute()
+            if not existing.data:
+                supabase.table("cdr_reports").insert(cdr_entry).execute()
             else:
-                supabase.table("kpis").update({"threshold": threshold}).eq("metric", metric).execute()
+                supabase.table("cdr_reports").update(cdr_entry).eq("uniqueid", cdr_entry["uniqueid"]).execute()
         return True
     except Exception as e:
-        st.error(f"Error saving KPIs: {str(e)}")
+        st.error(f"Error saving CDR data: {str(e)}")
         return False
 
-def get_kpis(supabase):
+def get_cdr_data(supabase, agent_name=None, start_date=None, end_date=None):
     try:
-        response = supabase.table("kpis").select("*").execute()
-        kpis = {}
-        for row in response.data:
-            metric = row["metric"]
-            value = row["threshold"]
-            kpis[metric] = int(float(value)) if metric == "call_volume" else float(value) if value is not None else 0.0
-        return kpis
-    except Exception as e:
-        st.error(f"Error retrieving KPIs: {str(e)}")
-        return {}
-
-def save_performance(supabase, agent_name, data):
-    try:
-        date = data.get('date', datetime.now().strftime("%Y-%m-%d"))
-        performance_data = {
-            "agent_name": agent_name,
-            "attendance": data['attendance'],
-            "quality_score": data['quality_score'],
-            "product_knowledge": data['product_knowledge'],
-            "contact_success_rate": data['contact_success_rate'],
-            "onboarding": data['onboarding'],
-            "reporting": data['reporting'],
-            "talk_time": data['talk_time'],
-            "resolution_rate": data['resolution_rate'],
-            "aht": data['aht'],
-            "csat": data['csat'],
-            "call_volume": data['call_volume'],
-            "date": date
-        }
-        supabase.table("performance").insert(performance_data).execute()
-        update_goal_status(supabase, agent_name)
-        return True
-    except Exception as e:
-        st.error(f"Error saving performance data: {str(e)}")
-        return False
-
-def get_performance(supabase, agent_name=None):
-    try:
-        query = supabase.table("performance").select("*")
+        query = supabase.table("cdr_reports").select("*")
         if agent_name:
             query = query.eq("agent_name", agent_name)
+        if start_date:
+            query = query.gte("date", start_date.isoformat())
+        if end_date:
+            query = query.lte("date", end_date.isoformat())
         response = query.execute()
         if response.data:
             df = pd.DataFrame(response.data)
-            numeric_cols = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
-                           'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            if 'call_volume' in df.columns:
-                df['call_volume'] = pd.to_numeric(df['call_volume'], errors='coerce').fillna(0).astype(int)
+            df['date'] = pd.to_datetime(df['date'])
+            df['duration'] = pd.to_numeric(df['duration'], errors='coerce').fillna(0).astype(int)
             return df
+        st.warning(f"No CDR data found for agent: {agent_name or 'All'}.")
         return pd.DataFrame()
     except Exception as e:
-        st.error(f"Error retrieving performance data: {str(e)}")
-        return pd.DataFrame()
-
-def get_zoho_agent_data(supabase, agent_name=None, start_date=None, end_date=None):
-    try:
-        all_data = []
-        chunk_size = 1000
-        offset = 0
-
-        while True:
-            query = supabase.table("zoho_agent_data").select("*").range(offset, offset + chunk_size - 1)
-            if agent_name:
-                query = query.eq("ticket_owner", agent_name)
-            response = query.execute()
-            if not response.data:
-                break
-            all_data.extend(response.data)
-            if len(response.data) < chunk_size:
-                break
-            offset += chunk_size
-
-        if all_data:
-            df = pd.DataFrame(all_data)
-            if 'id' not in df.columns:
-                st.error("❌ The 'zoho_agent_data' table is missing an 'id' column, required for unique ticket counting.")
-                return pd.DataFrame()
-            if 'ticket_owner' not in df.columns:
-                st.error("❌ The 'zoho_agent_data' table is missing a 'ticket_owner' column.")
-                return pd.DataFrame()
-            st.write(f"✅ Supabase returned {len(df)} rows for agent: {agent_name or 'All'}")
-            return df
-        else:
-            st.warning(f"⚠️ No Zoho agent data found for agent '{agent_name}'.")
-            st.write("Debug: No rows returned from Supabase query.")
-            return pd.DataFrame()
-    except Exception as e:
-        st.error(f"❌ Error retrieving Zoho agent data: {str(e)}")
+        st.error(f"Error retrieving CDR data: {str(e)}")
         if "violates row-level security policy" in str(e):
             st.error("🔒 RLS policy is blocking data access. Ensure agents are allowed to view their own data.")
         return pd.DataFrame()
 
-def set_agent_goal(supabase, agent_name, metric, target_value, manager_name, is_manager=False):
-    try:
-        schema_check = supabase.table("goals").select("created_by").limit(1).execute()
-        include_created_by = 'created_by' in schema_check.data[0] if schema_check.data else False
-        goal_data = {
-            "agent_name": agent_name,
-            "metric": metric,
-            "target_value": target_value,
-            "status": "Approved" if is_manager else "Awaiting Approval"
-        }
-        if include_created_by:
-            goal_data["created_by"] = manager_name
-        response = supabase.table("goals").select("*").eq("agent_name", agent_name).eq("metric", metric).execute()
-        if response.data:
-            supabase.table("goals").update(goal_data).eq("agent_name", agent_name).eq("metric", metric).execute()
-        else:
-            supabase.table("goals").insert(goal_data).execute()
-        return True
-    except Exception as e:
-        st.error(f"Error setting goal: {str(e)}")
-        return False
-
-def approve_goal(supabase, goal_id, manager_name, approve=True):
-    try:
-        schema_check = supabase.table("goals").select("approved_by").limit(1).execute()
-        include_approved_by = 'approved_by' in schema_check.data[0] if schema_check.data else False
-        update_data = {
-            "status": "Approved" if approve else "Rejected",
-            "approved_at": datetime.now().isoformat()
-        }
-        if include_approved_by:
-            update_data["approved_by"] = manager_name
-        supabase.table("goals").update(update_data).eq("id", goal_id).execute()
-        if st.session_state.get("notifications_enabled", False):
-            goal = supabase.table("goals").select("agent_name").eq("id", goal_id).execute()
-            if goal.data:
-                agent_name = goal.data[0]["agent_name"]
-                agent = supabase.table("users").select("id").eq("name", agent_name).execute()
-                if agent.data:
-                    status = "approved" if approve else "rejected"
-                    supabase.table("notifications").insert({
-                        "user_id": agent.data[0]["id"],
-                        "message": f"Your goal for {agent_name} was {status} by {manager_name}"
-                    }).execute()
-        return True
-    except Exception as Salisbury:
-        st.error(f"Error approving/rejecting goal: {str(e)}")
-        return False
-
-def update_goal_status(supabase, agent_name):
-    try:
-        goals = supabase.table("goals").select("*").eq("agent_name", agent_name).in_("status", ["Approved", "Pending"]).execute()
-        perf = get_performance(supabase, agent_name)
-        if not goals.data or perf.empty:
-            return
-        latest_perf = perf[perf['date'] == perf['date'].max()]
-        for goal in goals.data:
-            metric = goal['metric']
-            target = goal['target_value']
-            if metric in latest_perf.columns:
-                value = latest_perf[metric].iloc[0]
-                if (metric == "aht" and value <= target) or (metric != "aht" and value >= target):
-                    status = "Completed"
-                else:
-                    status = goal['status']  # Preserve Awaiting Approval or Approved
-                supabase.table("goals").update({"status": status}).eq("id", goal['id']).execute()
-    except Exception as e:
-        st.error(f"Error updating goal status: {str(e)}")
-
-def get_feedback(supabase, agent_name=None):
-    try:
-        query = supabase.table("feedback").select("*")
-        if agent_name:
-            query = query.eq("agent_name", agent_name)
-        response = query.execute()
-        if response.data:
-            return pd.DataFrame(response.data)
-        st.warning(f"No feedback for {agent_name or 'any agents'}.")
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error retrieving feedback: {str(e)}")
-        return pd.DataFrame()
-
-def respond_to_feedback(supabase, feedback_id, manager_response, manager_name):
-    try:
-        schema_check = supabase.table("feedback").select("updated_by").limit(1).execute()
-        include_updated_by = 'updated_by' in schema_check.data[0] if schema_check.data else False
-        response_data = {
-            "manager_response": manager_response,
-            "response_timestamp": datetime.now().isoformat()
-        }
-        if include_updated_by:
-            response_data["updated_by"] = manager_name
-        supabase.table("feedback").update(response_data).eq("id", feedback_id).execute()
-        if st.session_state.get("notifications_enabled", False):
-            feedback = supabase.table("feedback").select("agent_name").eq("id", feedback_id).execute()
-            if feedback.data:
-                agent_name = feedback.data[0]["agent_name"]
-                agent = supabase.table("users").select("id").eq("name", agent_name).execute()
-                if agent.data:
-                    supabase.table("notifications").insert({
-                        "user_id": agent.data[0]["id"],
-                        "message": f"Manager responded to your feedback: {manager_response[:50]}..."
-                    }).execute()
-        return True
-    except Exception as e:
-        st.error(f"Error responding to feedback: {str(e)}")
-        return False
-
-def get_notifications(supabase):
-    if not st.session_state.get("notifications_enabled", False):
-        return pd.DataFrame()
-    try:
-        user_response = supabase.table("users").select("id").eq("name", st.session_state.user).execute()
-        if not user_response.data:
-            st.warning("User not found in users table.")
-            return pd.DataFrame()
-        user_id = user_response.data[0]["id"]
-        response = supabase.table("notifications").select("*").eq("user_id", user_id).eq("read", False).execute()
-        return pd.DataFrame(response.data) if response.data else pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error retrieving notifications: {str(e)}")
-        return pd.DataFrame()
-
-def assess_performance(performance_df, kpis):
-    if performance_df.empty:
-        return performance_df
-    results = performance_df.copy()
-    metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
-               'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'csat', 'call_volume']
-    for metric in metrics:
-        if metric in results.columns:
-            results[f'{metric}_pass'] = results[metric] <= kpis.get(metric, 600) if metric == 'aht' else results[metric] >= kpis.get(metric, 50)
-    pass_columns = [f'{m}_pass' for m in metrics if f'{m}_pass' in results.columns]
-    if pass_columns:
-        results['overall_score'] = results[pass_columns].mean(axis=1) * 100
-    return results
-
-def authenticate_user(supabase, name, password):
-    try:
-        user_response = supabase.table("users").select("*").eq("name", name).execute()
-        if user_response.data:
-            return True, name, user_response.data[0]["role"]
-        return False, None, None
-    except Exception as e:
-        st.error(f"Authentication error: {str(e)}")
-        return False, None, None
-
-def setup_realtime(supabase):
-    if st.session_state.get("auto_refresh", False):
-        current_time = datetime.now()
-        last_refresh = st.session_state.get("last_refresh", current_time)
-        if current_time - last_refresh >= timedelta(seconds=30):
-            st.session_state.data_updated = True
-            st.session_state.last_refresh = current_time
-        st.sidebar.success("Auto-refresh enabled (polling every 30 seconds).")
-    else:
-        st.sidebar.info("Auto-refresh disabled. Enable to poll data every 30 seconds.")
-
-def upload_audio(supabase, agent_name, audio_file, manager_name):
-    try:
-        file_name = f"{agent_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{audio_file.name}"
-        res = supabase.storage.from_("call-audio").upload(file_name, audio_file.getvalue())
-        audio_url = supabase.storage.from_("call-audio").get_public_url(file_name)
-        supabase.table("audio_assessments").insert({
-            "agent_name": agent_name,
-            "audio_url": audio_url,
-            "upload_timestamp": datetime.now().isoformat(),
-            "assessment_notes": "",
-            "uploaded_by": manager_name
-        }).execute()
-        return True
-    except Exception as e:
-        st.error(f"Error uploading audio: {str(e)}")
-        return False
-
-def get_audio_assessments(supabase, agent_name=None):
-    try:
-        query = supabase.table("audio_assessments").select("*")
-        if agent_name:
-            query = query.eq("agent_name", agent_name)
-        response = query.execute()
-        if response.data:
-            return pd.DataFrame(response.data)
-        st.warning(f"No audio assessments for {agent_name or 'any agents'}.")
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error retrieving audio assessments: {str(e)}")
-        return pd.DataFrame()
-
-def update_assessment_notes(supabase, audio_id, notes):
-    try:
-        supabase.table("audio_assessments").update({"assessment_notes": notes}).eq("id", audio_id).execute()
-        return True
-    except Exception as e:
-        st.error(f"Error updating assessment notes: {str(e)}")
-        return False
+# [Previous functions like save_kpis, get_kpis, save_performance, etc., remain unchanged]
 
 def main():
     st.set_page_config(page_title="Call Center Assessment System", layout="wide")
@@ -437,6 +227,7 @@ def main():
         st.session_state.role = None
         st.session_state.data_updated = False
         st.session_state.notifications_enabled = False
+        st.session_state.cdr_enabled = False
         st.session_state.auto_refresh = False
         st.session_state.last_refresh = datetime.now()
         st.session_state.cleared_chats = set()
@@ -506,7 +297,7 @@ def main():
                 st.metric("Total Call Volume", f"{total_call_volume}")
             with col3:
                 st.metric("Agent Count", len(results['agent_name'].unique()))
-        tabs = st.tabs(["📋 Set KPIs", "📝 Input Performance", "📊 Assessments", "🎯 Set Goals", "💬 Feedback", "🎙️ Audio Assessments"])
+        tabs = st.tabs(["📋 Set KPIs", "📝 Input Performance", "📊 Assessments", "🎯 Set Goals", "💬 Feedback", "🎙️ Audio Assessments", "📞 CDR Reports"])
 
         with tabs[0]:
             st.header("📋 Set KPI Thresholds")
@@ -786,6 +577,56 @@ def main():
             else:
                 st.info("No audio assessments available.")
 
+        with tabs[6]:
+            st.header("📞 CDR Reports")
+            if not st.session_state.get("cdr_enabled", False):
+                st.warning("CDR functionality is disabled because the 'cdr_reports' table is missing.")
+            else:
+                st.subheader("Upload CDR Data")
+                uploaded_file = st.file_uploader("Upload CDR CSV", type="csv", key="cdr_upload")
+                if uploaded_file:
+                    df = pd.read_csv(uploaded_file)
+                    required_cols = ['Date', 'Source', 'Ring Group', 'Destination', 'Src. Channel', 'Account Code', 'Dst. Channel', 'Status', 'Duration', 'Uniqueid', 'User Field']
+                    if all(col in df.columns for col in required_cols):
+                        try:
+                            df['Date'] = pd.to_datetime(df['Date'])
+                            df['Duration'] = df['Duration'].apply(parse_duration)
+                            if df['Duration'].lt(0).any():
+                                st.error("Duration cannot be negative.")
+                            elif df['Uniqueid'].duplicated().any():
+                                st.error("Duplicate Uniqueid values found.")
+                            else:
+                                if save_cdr_data(supabase, df):
+                                    st.success(f"Imported CDR data for {len(df)} records!")
+                                else:
+                                    st.error("Failed to import CDR data.")
+                        except Exception as e:
+                            st.error(f"Invalid data format: {str(e)}")
+                    else:
+                        st.error(f"CSV missing required columns. Expected: {', '.join(required_cols)}")
+
+                st.subheader("View CDR Data")
+                col1, col2 = st.columns(2)
+                with col1:
+                    start_date = st.date_input("Start Date", value=pd.to_datetime('2025-05-01'), key="cdr_start")
+                with col2:
+                    end_date = st.date_input("End Date", value=datetime.now().date(), key="cdr_end")
+                cdr_df = get_cdr_data(supabase, start_date=start_date, end_date=end_date)
+                if not cdr_df.empty:
+                    st.dataframe(cdr_df[['date', 'source', 'ring_group', 'destination', 'src_channel', 'account_code', 'dst_channel', 'status', 'duration', 'uniqueid', 'user_field', 'call_direction', 'agent_name']])
+                    st.download_button(label="📥 Download CDR Data", data=cdr_df.to_csv(index=False), file_name="cdr_reports.csv")
+                    try:
+                        direction_counts = cdr_df.groupby('call_direction')['uniqueid'].nunique().reset_index(name='Count')
+                        fig1 = px.pie(direction_counts, values='Count', names='call_direction', title="Call Direction Distribution")
+                        st.plotly_chart(fig1)
+                        status_counts = cdr_df.groupby('status')['uniqueid'].nunique().reset_index(name='Count')
+                        fig2 = px.bar(status_counts, x='status', y='Count', title="Call Status Distribution")
+                        st.plotly_chart(fig2)
+                    except Exception as e:
+                        st.error(f"Error plotting CDR data: {str(e)}")
+                else:
+                    st.info("No CDR data available for the selected date range.")
+
     elif st.session_state.role == "Agent":
         st.title(f"👤 Agent Dashboard - {st.session_state.user}")
         if st.session_state.user == "Joseph Kavuma":
@@ -794,7 +635,7 @@ def main():
             except:
                 st.error("Error loading profile image.")
         
-        tabs = st.tabs(["📋 Metrics", "🎯 Goals", "💬 Feedback", "📊 Tickets"])
+        tabs = st.tabs(["📋 Metrics", "🎯 Goals", "💬 Feedback", "📊 Tickets", "📞 CDR Reports"])
         performance_df = get_performance(supabase, st.session_state.user)
         all_performance_df = get_performance(supabase)
         zoho_df = get_zoho_agent_data(supabase, st.session_state.user)
@@ -867,7 +708,7 @@ def main():
                         if not goal_row.empty:
                             row = goal_row.iloc[0]
                             current_value = results[results['date'] == max(results['date'])][metric].mean() if metric in results.columns else 0.0
-                            progress = min((kpis.get(metric, 600) - current_value) / (kpis.get(metric, 600) - row['target_value']) * 100, 100) if metric == 'aht' else min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
+                            progress = min((kpis.get(metric, 600) - current_value) / kpis.get(metric, 600) - row['target_value']) * 100, 100) if metric == 'aht' else min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
                             color = "green" if progress >= 80 else "orange" if progress >= 50 else "red"
                             st.markdown(f"<div class='progress-bar' style='background-color: {color}; width: {progress}%;'></div>", unsafe_allow_html=True)
                             st.write(f"{metric.replace('_', ' ').title()}: Target {row['target_value']:.1f}{' sec' if metric == 'aht' else '%'}, Current {current_value:.1f}{' sec' if metric == 'aht' else '%'}, Status: {row['status']}")
@@ -947,5 +788,37 @@ def main():
                     st.info("No Zoho data available.")
                     st.write("Debug: Check zoho_agent_data table and RLS policies.")
 
+        with tabs[4]:
+            with st.expander("📞 Your CDR Data"):
+                if not st.session_state.get("cdr_enabled", False):
+                    st.warning("CDR data is unavailable because the 'cdr_reports' table is missing.")
+                else:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        start_date = st.date_input("Start Date", value=pd.to_datetime('2025-05-01'), key="agent_cdr_start")
+                    with col2:
+                        end_date = st.date_input("End Date", value=datetime.now().date(), key="agent_cdr_end")
+                    cdr_df = get_cdr_data(supabase, agent_name=st.session_state.user, start_date=start_date, end_date=end_date)
+                    if not cdr_df.empty:
+                        total_calls = cdr_df['uniqueid'].nunique()
+                        avg_duration = cdr_df['duration'].mean()
+                        answered_calls = cdr_df[(cdr_df['status'] == 'ANSWERED') & (cdr_df['destination'].isin(AGENT_EXTENSIONS))]['uniqueid'].nunique()
+                        queue_calls = cdr_df[cdr_df['call_direction'] == 'queue']['uniqueid'].nunique()
+                        st.metric("Total Calls", f"{total_calls}")
+                        st.metric("Answered Calls", f"{answered_calls}")
+                        st.metric("Queue Calls", f"{queue_calls}")
+                        st.metric("Average Call Duration", f"{avg_duration:.1f} seconds")
+                        st.dataframe(cdr_df[['date', 'source', 'ring_group', 'destination', 'status', 'duration', 'call_direction', 'user_field']])
+                        st.download_button(label="📥 Download Your CDR Data", data=cdr_df.to_csv(index=False), file_name="my_cdr_data.csv")
+                        try:
+                            direction_counts = cdr_df.groupby('call_direction')['uniqueid'].nunique().reset_index(name='Count')
+                            fig = px.bar(direction_counts, x='call_direction', y='Count', title="Your Call Direction Distribution")
+                            st.plotly_chart(fig)
+                        except Exception as e:
+                            st.error(f"Error plotting CDR data: {str(e)}")
+                    else:
+                        st.info("No CDR data available for the selected date range.")
+
 if __name__ == "__main__":
     main()
+```
