@@ -833,123 +833,90 @@ def main():
             else:
                 st.info("No audio assessments available.")
 
-        with tabs[6]:
-            st.header("📞 CDR Reports")
-            if not st.session_state.get("cdr_enabled", False):
-                st.warning("CDR functionality is disabled because the 'cdr_reports' table is missing.")
-            else:
-                st.subheader("Upload CDR Data")
-                uploaded_file = st.file_uploader("Upload CDR CSV", type="csv", key="cdr_upload")
-                if uploaded_file:
-                    df = pd.read_csv(uploaded_file)
-                    required_cols = ['Date', 'Source', 'Ring Group', 'Destination', 'Src. Channel', 'Account Code', 'Dst. Channel', 'Status', 'Duration', 'Uniqueid', 'User Field']
-                    if all(col in df.columns for col in required_cols):
-                        try:
-                            df['Date'] = pd.to_datetime(df['Date'])
-                            df['Duration'] = df['Duration'].apply(parse_duration)
-                            if df['Duration'].lt(0).any():
-                                st.error("Duration cannot be negative.")
-                            elif df['Uniqueid'].duplicated().any():
-                                st.error("Duplicate Uniqueid values found.")
-                            else:
-                                if save_cdr_data(supabase, df):
-                                    st.success(f"Imported CDR data for {len(df)} records!")
-                                else:
-                                    st.error("Failed to import CDR data.")
-                        except Exception as e:
-                            st.error(f"Invalid data format: {str(e)}")
-                    else:
-                        st.error(f"CSV missing required columns. Expected: {', '.join(required_cols)}")
-
-                st.subheader("View CDR Data")
-                col1, col2 = st.columns(2)
-                with col1:
-                    start_date = st.date_input("Start Date", value=pd.to_datetime('2025-05-01'), key="cdr_start")
-                with col2:
-                    end_date = st.date_input("End Date", value=datetime.now().date(), key="cdr_end")
-                cdr_df = get_cdr_data(supabase, start_date=start_date, end_date=end_date)
-                if not cdr_df.empty:
-                    st.dataframe(cdr_df[['date', 'source', 'ring_group', 'destination', 'src_channel', 'account_code', 'dst_channel', 'status', 'duration', 'uniqueid', 'user_field', 'call_direction', 'agent_name']])
-                    st.download_button(label="📥 Download CDR Data", data=cdr_df.to_csv(index=False), file_name="cdr_reports.csv")
-                    try:
-                        direction_counts = cdr_df.groupby('call_direction')['uniqueid'].nunique().reset_index(name='Count')
-                        fig1 = px.pie(direction_counts, values='Count', names='call_direction', title="Call Direction Distribution")
-                        st.plotly_chart(fig1)
-                        status_counts = cdr_df.groupby('status')['uniqueid'].nunique().reset_index(name='Count')
-                        fig2 = px.bar(status_counts, x='status', y='Count', title="Call Status Distribution")
-                        st.plotly_chart(fig2)
-                    except Exception as e:
-                        st.error(f"Error plotting CDR data: {str(e)}")
-                else:
-                    st.info("No CDR data available for the selected date range.")
-
-    elif st.session_state.role == "Agent":
-        st.title(f"👤 Agent Dashboard - {st.session_state.user}")
-        if st.session_state.user == "Joseph Kavuma":
+       with tabs[6]:
+    st.header("📞 CDR Reports")
+    if not st.session_state.get("cdr_enabled", False):
+        st.warning("CDR functionality is disabled because the 'cdr_reports' table is missing.")
+    else:
+        st.subheader("Upload CDR Data")
+        uploaded_file = st.file_uploader("Upload CDR CSV", type="csv", key="cdr_upload")
+        if uploaded_file:
             try:
-                st.image("Joseph.jpg", caption="Agent Profile", width=150)
-            except:
-                st.error("Error loading profile image.")
-        
-        tabs = st.tabs(["📋 Metrics", "🎯 Goals", "💬 Feedback", "📊 Tickets", "📞 CDR Reports"])
-        performance_df = get_performance(supabase, st.session_state.user)
-        all_performance_df = get_performance(supabase)
-        zoho_df = get_zoho_agent_data(supabase, st.session_state.user)
-
-        with tabs[0]:
-            with st.expander("📈 Performance Metrics"):
-                if not performance_df.empty and not all_performance_df.empty:
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        start_date = st.date_input("Start Date", value=pd.to_datetime('2025-05-01'), key="agent_start")
-                    with col2:
-                        end_date = st.date_input("End Date", value=datetime.now().date(), key="agent_end")
-                    performance_df['date'] = pd.to_datetime(performance_df['date'])
-                    all_performance_df['date'] = pd.to_datetime(all_performance_df['date'])
-                    masked_df = performance_df[(performance_df['date'] >= pd.to_datetime(start_date)) & 
-                                             (performance_df['date'] <= pd.to_datetime(end_date))]
-                    all_masked_df = all_performance_df[(all_performance_df['date'] >= pd.to_datetime(start_date)) & 
-                                                     (all_performance_df['date'] <= pd.to_datetime(end_date))]
-                    kpis = get_kpis(supabase)
-                    results = assess_performance(masked_df, kpis)
-                    all_results = assess_performance(all_masked_df, kpis)
-                    avg_overall_score = results['overall_score'].mean()
-                    avg_metrics = results[['overall_score', 'quality_score', 'csat', 'attendance', 
-                                         'resolution_rate', 'contact_success_rate', 'aht', 'talk_time']].mean()
-                    total_call_volume = results['call_volume'].sum()
-                    
-                    if avg_overall_score > 90:
-                        st.markdown('<span style="color: gold; font-weight: bold;">🏆 Top Performer</span>', unsafe_allow_html=True)
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Overall Score", f"{avg_metrics['overall_score']:.1f}%")
-                        st.metric("Quality Score", f"{avg_metrics['quality_score']:.1f}%")
-                        st.metric("Customer Satisfaction", f"{avg_metrics['csat']:.1f}%")
-                    with col2:
-                        st.metric("Attendance", f"{avg_metrics['attendance']:.1f}%")
-                        st.metric("Resolution Rate", f"{avg_metrics['resolution_rate']:.1f}%")
-                        st.metric("Contact Success", f"{avg_metrics['contact_success_rate']:.1f}%")
-                    with col3:
-                        st.metric("Average Handle Time", f"{avg_metrics['aht']:.1f} sec")
-                        st.metric("Talk Time", f"{avg_metrics['talk_time']:.1f} sec")
-                        st.metric("Call Volume", f"{total_call_volume:.0f} calls")
-                    
-                    st.subheader("Performance Profile")
-                    metrics = ['quality_score', 'csat', 'attendance', 'resolution_rate']
-                    values = [results[m].mean() for m in metrics]
-                    fig = go.Figure(data=go.Scatterpolar(r=values, theta=[m.replace('_', ' ').title() for m in metrics], fill='toself'))
-                    fig.update_layout(title="Your Performance Profile", polar=dict(radialaxis=dict(visible=True, range=[0, 100])))
-                    st.plotly_chart(fig)
-                    
-                    st.subheader("Comparison to Peers")
-                    peer_avg = all_results.groupby('agent_name')['overall_score'].mean().reset_index()
-                    peer_avg = peer_avg[peer_avg['agent_name'] != st.session_state.user]
-                    fig3 = px.box(peer_avg, y='overall_score', title="Peer Score Distribution", labels={'overall_score': 'Score (%)'}, points="all")
-                    fig3.add_hline(y=avg_overall_score, line_dash="dash", line_color="red", annotation_text=f"Your Score: {avg_overall_score:.1f}%")
-                    st.plotly_chart(fig3)
+                # Read CSV with explicit encoding and flexible delimiter
+                df = pd.read_csv(uploaded_file, encoding='utf-8-sig', sep=',', on_bad_lines='warn')
+                
+                # Debug: Show original column names
+                st.write("**Debug: CSV Column Names**")
+                st.write(df.columns.tolist())
+                
+                # Normalize column names: strip whitespace, handle case sensitivity
+                df.columns = df.columns.str.strip().str.replace(r'\s+', ' ', regex=True)
+                column_mappings = {
+                    'uniqueid': 'Uniqueid',
+                    'unique id': 'Uniqueid',
+                    'UniqueID': 'Uniqueid',
+                    'Unique ID': 'Uniqueid'
+                }
+                df.columns = [column_mappings.get(col.lower(), col) for col in df.columns]
+                
+                # Required columns
+                required_cols = ['Date', 'Source', 'Ring Group', 'Destination', 'Src. Channel', 
+                               'Account Code', 'Dst. Channel', 'Status', 'Duration', 'Uniqueid', 'User Field']
+                
+                # Check for missing columns
+                missing_cols = [col for col in required_cols if col not in df.columns]
+                if missing_cols:
+                    st.error(f"CSV missing required columns: {', '.join(missing_cols)}")
+                    st.write("Expected columns:", required_cols)
+                    st.write("Current columns after normalization:", df.columns.tolist())
+                    st.write("Please ensure column names match exactly (check for case sensitivity or extra spaces).")
                 else:
-                    st.info("No performance data available.")
+                    # Select only required columns
+                    df = df[required_cols]
+                    
+                    # Debug: Confirm selected columns
+                    st.write("**Debug: Selected Columns for Processing**")
+                    st.write(df.columns.tolist())
+                    
+                    try:
+                        df['Date'] = pd.to_datetime(df['Date'])
+                        df['Duration'] = df['Duration'].apply(parse_duration)
+                        if df['Duration'].lt(0).any():
+                            st.error("Duration cannot be negative.")
+                        elif df['Uniqueid'].duplicated().any():
+                            st.error("Duplicate Uniqueid values found.")
+                        else:
+                            if save_cdr_data(supabase, df):
+                                st.success(f"Imported CDR data for {len(df)} records!")
+                            else:
+                                st.error("Failed to import CDR data.")
+                    except Exception as e:
+                        st.error(f"Invalid data format: {str(e)}")
+            except Exception as e:
+                st.error(f"Error reading CSV file: {str(e)}")
+                st.write("Try checking the CSV for correct delimiter (comma), encoding (UTF-8), or malformed rows.")
+
+        st.subheader("View CDR Data")
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("Start Date", value=pd.to_datetime('2025-05-01'), key="cdr_start")
+        with col2:
+            end_date = st.date_input("End Date", value=datetime.now().date(), key="cdr_end")
+        cdr_df = get_cdr_data(supabase, start_date=start_date, end_date=end_date)
+        if not cdr_df.empty:
+            st.dataframe(cdr_df[['date', 'source', 'ring_group', 'destination', 'src_channel', 'account_code', 'dst_channel', 'status', 'duration', 'uniqueid', 'user_field', 'call_direction', 'agent_name']])
+            st.download_button(label="📥 Download CDR Data", data=cdr_df.to_csv(index=False), file_name="cdr_reports.csv")
+            try:
+                direction_counts = cdr_df.groupby('call_direction')['uniqueid'].nunique().reset_index(name='Count')
+                fig1 = px.pie(direction_counts, values='Count', names='call_direction', title="Call Direction Distribution")
+                st.plotly_chart(fig1)
+                status_counts = cdr_df.groupby('status')['uniqueid'].nunique().reset_index(name='Count')
+                fig2 = px.bar(status_counts, x='status', y='Count', title="Call Status Distribution")
+                st.plotly_chart(fig2)
+            except Exception as e:
+                st.error(f"Error plotting CDR data: {str(e)}")
+        else:
+            st.info("No CDR data available for the selected date range.")
 
         with tabs[1]:
             with st.expander("🎯 Your Goals"):
