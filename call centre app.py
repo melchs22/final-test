@@ -37,6 +37,7 @@ def init_supabase():
         # Debug: Check authentication status
         session = client.auth.get_session()
         st.write("**Debug: Supabase Initialization**")
+        st.write(f"Supabase URL: {url}")
         st.write(f"Session Active: {session is not None}")
         st.write(f"Using Key: {'Service Role' if key == st.secrets['supabase'].get('service_role_key') else 'Anon or Other'}")
         if not session:
@@ -83,33 +84,57 @@ def check_db(supabase):
         st.sidebar.success("✅ Connected to database successfully")
     return True
 
-def authenticate_user(supabase, email, password):
+def authenticate_user(supabase, username, password):
     try:
-        # Use Supabase Authentication
+        # Debug: Log credentials (mask password)
+        st.write("**Debug: Authentication Attempt**")
+        st.write(f"Username: {username}")
+        st.write(f"Password: {'*' * len(password)}")
+        
+        # Query users table for username
+        user_data = supabase.table("users").select("id, name, role, email").eq("name", username).single().execute()
+        st.write(f"Users Table Query: {'Data found' if user_data.data else 'No data found'}")
+        
+        if not user_data.data:
+            st.error(f"Username '{username}' not found in users table. Please check the username.")
+            return False, None, None, None
+        
+        email = user_data.data["email"]
+        user_id = user_data.data["id"]
+        st.write(f"Retrieved Email: {email}")
+        st.write(f"Retrieved User ID: {user_id}")
+        
+        # Authenticate with Supabase using email
         response = supabase.auth.sign_in_with_password({"email": email, "password": password})
+        st.write(f"Auth Response: {'User found' if response.user else 'No user returned'}")
+        
         if response.user:
-            # Fetch user data from users table
-            user_data = supabase.table("users").select("id, name, role").eq("id", response.user.id).single().execute()
-            if user_data.data:
-                # Set session explicitly
-                supabase.auth.set_session(response.session.access_token)
-                st.session_state.supabase_user_id = user_data.data["id"]
-                st.session_state.supabase_access_token = response.session.access_token
-                # Debug: Log authentication details
-                st.write("**Debug: Authentication**")
-                st.write(f"User ID: {user_data.data['id']}")
-                st.write(f"Name: {user_data.data['name']}")
-                st.write(f"Role: {user_data.data['role']}")
-                st.write(f"Session Set: {supabase.auth.get_session() is not None}")
-                return True, user_data.data["name"], user_data.data["role"], user_data.data["id"]
-            else:
-                st.error("User not found in users table. Please ensure your account is set up.")
+            # Verify user ID matches
+            if response.user.id != user_id:
+                st.error("User ID mismatch between auth.users and users table.")
                 return False, None, None, None
+            
+            # Set session
+            supabase.auth.set_session(response.session.access_token)
+            st.session_state.supabase_user_id = user_id
+            st.session_state.supabase_access_token = response.session.access_token
+            # Debug: Log authentication details
+            st.write("**Debug: Authentication Success**")
+            st.write(f"User ID: {user_id}")
+            st.write(f"Name: {user_data.data['name']}")
+            st.write(f"Role: {user_data.data['role']}")
+            st.write(f"Session Set: {supabase.auth.get_session() is not None}")
+            return True, user_data.data["name"], user_data.data["role"], user_id
         else:
-            st.error("Invalid credentials.")
+            st.error("Invalid password. Please check your credentials.")
             return False, None, None, None
     except Exception as e:
         st.error(f"Authentication failed: {str(e)}")
+        st.write("Suggestions:")
+        st.write("- Verify the username exists in the users table.")
+        st.write("- Ensure the email in the users table is registered in Supabase Authentication > Users.")
+        st.write("- Check the password for the email in Supabase Authentication.")
+        st.write("- Verify the Supabase URL and key in secrets.toml.")
         return False, None, None, None
 
 def set_supabase_session(supabase, user_id):
@@ -567,10 +592,10 @@ def main():
     if not st.session_state.user:
         st.title("🔐 Login")
         with st.form("login_form"):
-            email = st.text_input("Email")
+            username = st.text_input("Username")
             password = st.text_input("Password", type="password")
             if st.form_submit_button("Login"):
-                success, user, role, user_id = authenticate_user(supabase, email, password)
+                success, user, role, user_id = authenticate_user(supabase, username, password)
                 if success:
                     st.session_state.user = user
                     st.session_state.role = role
@@ -578,7 +603,7 @@ def main():
                     st.success(f"Logged in as {user} ({role})")
                     st.rerun()
                 else:
-                    st.error("Invalid credentials or user not found.")
+                    st.error("Invalid username or password, or user not found.")
         return
 
     if st.sidebar.button("Logout"):
@@ -598,7 +623,7 @@ def main():
                 for _, notif in notifications.iterrows():
                     st.write(notif["message"])
                     if st.button("Mark as Read", key=f"notif_{notif['id']}"):
-                        supabase.table("notifications").update({"read": True}).eq("id", notif["id"]).execute()
+                        supabase.table("notifications").update({"read": True}).eq("id", notif['id']).execute()
                         st.rerun()
     else:
         with st.sidebar.expander("🔔 Notifications (0)"):
