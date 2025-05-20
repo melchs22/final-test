@@ -137,15 +137,15 @@ def get_performance(supabase, agent_name=None):
         return pd.DataFrame()
 
 # Get Zoho agent data
-def get_zoho_agent_data(supabase, agent_name=None):
+def get_zoho_agent_data(supabase, ticket_owner=None):
     try:
         all_data = []
         chunk_size = 1000
         offset = 0
         while True:
             query = supabase.table("zoho_agent_data").select("*").range(offset, offset + chunk_size - 1)
-            if agent_name:
-                query = query.eq("ticket_owner", agent_name)
+            if ticket_owner:  # Filter by the logged-in agent's name
+                query = query.eq("ticket_owner", ticket_owner)
             response = query.execute()
             if not response.data:
                 break
@@ -161,8 +161,8 @@ def get_zoho_agent_data(supabase, agent_name=None):
             return df
         st.warning("No Zoho data found.")
         return pd.DataFrame()
-    except Exception:
-        st.error("Error retrieving Zoho data.")
+    except Exception as e:
+        st.error(f"Error retrieving Zoho data: {str(e)}")
         return pd.DataFrame()
 
 # Set agent goal
@@ -1144,43 +1144,43 @@ def main():
                 st.info("No feedback submitted.")
 
         with tabs[3]:  # Tickets
-            st.header("📊 Zoho Ticket Data")
-            zoho_df = get_zoho_agent_data(supabase, st.session_state.user)
-            if not zoho_df.empty:
-                total_tickets = zoho_df['id'].nunique()
-                st.metric("Total Tickets Handled", f"{total_tickets}")
-                time_col = None
-                if 'created_time' in zoho_df.columns:
-                    time_col = 'created_time'
-                elif 'created_at' in zoho_df.columns:
-                    time_col = 'created_at'
-                else:
-                    st.warning("No 'created_time' or 'created_at' column found in Zoho data.")
-                
-                if time_col:
-                    try:
-                        zoho_df[time_col] = pd.to_datetime(zoho_df[time_col]).dt.strftime('%Y-%m-%d %H:%M:%S')
-                    except Exception:
-                        st.warning("Error formatting time column.")
-                
-                display_cols = ['id', 'subject', 'status']
-                if time_col:
-                    display_cols.append(time_col)
-                display_cols.append('priority')
-                display_cols = [col for col in display_cols if col in zoho_df.columns]
-                
-                st.dataframe(zoho_df[display_cols])
-                channel_counts = zoho_df.groupby('channel')['id'].nunique().reset_index(name='Ticket Count')
-                st.subheader("Ticket Breakdown by Channel")
-                st.dataframe(channel_counts)
-                try:
-                    fig = px.pie(channel_counts, values='Ticket Count', names='channel', title="Ticket Distribution by Channel")
-                    st.plotly_chart(fig)
-                except Exception:
-                    st.error("Error plotting ticket distribution.")
-                st.download_button(label="📥 Download Zoho Data", data=zoho_df.to_csv(index=False), file_name="zoho_agent_data.csv")
-            else:
-                st.info("No Zoho data available.")
+    st.header("📊 Zoho Ticket Data")
+    zoho_df = get_zoho_agent_data(supabase, st.session_state.user)  # Filter by logged-in user
+    if not zoho_df.empty:
+        total_tickets = zoho_df['id'].nunique()
+        st.metric("Total Tickets Handled", f"{total_tickets}")
+        time_col = None
+        if 'created_time' in zoho_df.columns:
+            time_col = 'created_time'
+        elif 'created_at' in zoho_df.columns:
+            time_col = 'created_at'
+        else:
+            st.warning("No 'created_time' or 'created_at' column found in Zoho data.")
+        
+        if time_col:
+            try:
+                zoho_df[time_col] = pd.to_datetime(zoho_df[time_col]).dt.strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                st.warning("Error formatting time column.")
+        
+        display_cols = ['id', 'subject', 'status']
+        if time_col:
+            display_cols.append(time_col)
+        display_cols.extend(['priority', 'channel'])  # Add these if present
+        display_cols = [col for col in display_cols if col in zoho_df.columns]
+        
+        st.dataframe(zoho_df[display_cols])
+        channel_counts = zoho_df.groupby('channel')['id'].nunique().reset_index(name='Ticket Count')
+        st.subheader("Ticket Breakdown by Channel")
+        st.dataframe(channel_counts)
+        try:
+            fig = px.pie(channel_counts, values='Ticket Count', names='channel', title="Ticket Distribution by Channel")
+            st.plotly_chart(fig)
+        except Exception:
+            st.error("Error plotting ticket distribution.")
+        st.download_button(label="📥 Download Zoho Data", data=zoho_df.to_csv(index=False), file_name="zoho_agent_data.csv")
+    else:
+        st.info("No Zoho data available.")
 
         with tabs[4]:  # Achievements
             st.header("🏆 My Achievements")
