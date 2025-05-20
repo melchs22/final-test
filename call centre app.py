@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -7,6 +8,7 @@ from supabase import create_client, Client
 import requests
 import time
 import uuid
+import urllib.parse
 
 # Initialize Supabase
 def init_supabase():
@@ -37,7 +39,7 @@ def check_db(supabase):
         return False
     if missing_non_critical:
         st.sidebar.warning(f"Non-critical tables missing: {', '.join(missing_non_critical)}.")
-        if "notifications" in missing_non_critical:
+        if "notifications" in missing_non_critical or "forum_posts" in missing_non_critical:
             st.session_state.notifications_enabled = False
         else:
             st.session_state.notifications_enabled = True
@@ -1024,161 +1026,161 @@ def main():
         tabs = st.tabs(tabs_list)
         
         with tabs[0]:  # Metrics
-            with st.expander("📈 Performance Metrics"):
-                performance_df = get_performance(supabase, st.session_state.user)
-                all_performance_df = get_performance(supabase)
-                if not performance_df.empty and not all_performance_df.empty:
-                    kpis = get_kpis(supabase)
-                    results = assess_performance(performance_df, kpis)
-                    all_results = assess_performance(all_performance_df, kpis)
-                    avg_overall_score = results['overall_score'].mean()
-                    avg_metrics = results[['overall_score', 'quality_score', 'csat', 'attendance', 
-                                         'resolution_rate', 'contact_success_rate', 'aht', 'talk_time']].mean()
-                    total_call_volume = results['call_volume'].sum()
-                    
-                    if avg_overall_score > 90:
-                        st.markdown('<span style="color: gold; font-weight: bold;">🏆 Top Performer</span>', unsafe_allow_html=True)
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Overall Score", f"{avg_metrics['overall_score']:.1f}%")
-                        st.metric("Quality Score", f"{avg_metrics['quality_score']:.1f}%")
-                        st.metric("Customer Satisfaction", f"{avg_metrics['csat']:.1f}%")
-                    with col2:
-                        st.metric("Attendance", f"{avg_metrics['attendance']:.1f}%")
-                        st.metric("Resolution Rate", f"{avg_metrics['resolution_rate']:.1f}%")
-                        st.metric("Contact Success", f"{avg_metrics['contact_success_rate']:.1f}%")
-                    with col3:
-                        st.metric("Average Handle Time", f"{avg_metrics['aht']:.1f} sec")
-                        st.metric("Talk Time", f"{avg_metrics['talk_time']:.1f} sec")
-                        st.metric("Call Volume", f"{total_call_volume:.0f} calls")
-                    
-                    st.subheader("Performance Profile")
-                    fig = plot_performance_chart(supabase, st.session_state.user)
-                    if fig:
-                        st.plotly_chart(fig)
-                    
-                    st.subheader("Comparison to Peers")
-                    peer_avg = all_results.groupby('agent_name')['overall_score'].mean().reset_index()
-                    peer_avg = peer_avg[peer_avg['agent_name'] != st.session_state.user]
-                    fig3 = px.box(peer_avg, y='overall_score', title="Peer Score Distribution", labels={'overall_score': 'Score (%)'}, points="all")
-                    fig3.add_hline(y=avg_overall_score, line_dash="dash", line_color="red", annotation_text=f"Your Score: {avg_overall_score:.1f}%")
-                    st.plotly_chart(fig3)
-                    
-                    st.subheader("🤖 Coaching Tips")
-                    tips = get_coaching_tips(supabase, st.session_state.user)
-                    if tips:
-                        for tip in tips:
-                            st.markdown(f"**{tip['metric'].replace('_', ' ').title()}**: {tip['tip']}")
-                    else:
-                        st.info("You're performing well! No coaching tips needed.")
+            st.header("📈 Performance Metrics")
+            performance_df = get_performance(supabase, st.session_state.user)
+            all_performance_df = get_performance(supabase)
+            if not performance_df.empty and not all_performance_df.empty:
+                kpis = get_kpis(supabase)
+                results = assess_performance(performance_df, kpis)
+                all_results = assess_performance(all_performance_df, kpis)
+                avg_overall_score = results['overall_score'].mean()
+                avg_metrics = results[['overall_score', 'quality_score', 'csat', 'attendance', 
+                                     'resolution_rate', 'contact_success_rate', 'aht', 'talk_time']].mean()
+                total_call_volume = results['call_volume'].sum()
+                
+                if avg_overall_score > 90:
+                    st.markdown('<span style="color: gold; font-weight: bold;">🏆 Top Performer</span>', unsafe_allow_html=True)
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Overall Score", f"{avg_metrics['overall_score']:.1f}%")
+                    st.metric("Quality Score", f"{avg_metrics['quality_score']:.1f}%")
+                    st.metric("Customer Satisfaction", f"{avg_metrics['csat']:.1f}%")
+                with col2:
+                    st.metric("Attendance", f"{avg_metrics['attendance']:.1f}%")
+                    st.metric("Resolution Rate", f"{avg_metrics['resolution_rate']:.1f}%")
+                    st.metric("Contact Success", f"{avg_metrics['contact_success_rate']:.1f}%")
+                with col3:
+                    st.metric("Average Handle Time", f"{avg_metrics['aht']:.1f} sec")
+                    st.metric("Talk Time", f"{avg_metrics['talk_time']:.1f} sec")
+                    st.metric("Call Volume", f"{total_call_volume:.0f} calls")
+                
+                st.subheader("Performance Profile")
+                fig = plot_performance_chart(supabase, st.session_state.user)
+                if fig:
+                    st.plotly_chart(fig)
+                
+                st.subheader("Comparison to Peers")
+                peer_avg = all_results.groupby('agent_name')['overall_score'].mean().reset_index()
+                peer_avg = peer_avg[peer_avg['agent_name'] != st.session_state.user]
+                fig3 = px.box(peer_avg, y='overall_score', title="Peer Score Distribution", labels={'overall_score': 'Score (%)'}, points="all")
+                fig3.add_hline(y=avg_overall_score, line_dash="dash", line_color="red", annotation_text=f"Your Score: {avg_overall_score:.1f}%")
+                st.plotly_chart(fig3)
+                
+                st.subheader("🤖 Coaching Tips")
+                tips = get_coaching_tips(supabase, st.session_state.user)
+                if tips:
+                    for tip in tips:
+                        st.markdown(f"**{tip['metric'].replace('_', ' ').title()}**: {tip['tip']}")
                 else:
-                    st.info("No performance data available.")
+                    st.info("You're performing well! No coaching tips needed.")
+            else:
+                st.info("No performance data available.")
 
         with tabs[1]:  # Goals
-            with st.expander("🎯 Your Goals"):
-                all_metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
-                              'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat',
-                              'call_volume', 'overall_score']
-                response = supabase.table("goals").select("*").eq("agent_name", st.session_state.user).execute()
-                goals_df = pd.DataFrame(response.data)
-                if not goals_df.empty:
-                    for metric in all_metrics:
-                        goal_row = goals_df[goals_df['metric'] == metric]
-                        if not goal_row.empty:
-                            row = goal_row.iloc[0]
-                            current_value = results[results['date'] == max(results['date'])][metric].mean() if metric in results.columns else 0.0
-                            progress = min((kpis.get(metric, 600) - current_value) / (kpis.get(metric, 600) - row['target_value']) * 100, 100) if metric == 'aht' else min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
-                            color = "green" if progress >= 80 else "orange" if progress >= 50 else "red"
-                            st.markdown(f"<div class='progress-bar' style='background-color: {color}; width: {progress}%;'></div>", unsafe_allow_html=True)
-                            st.write(f"{metric.replace('_', ' ').title()}: Target {row['target_value']:.1f}{' sec' if metric == 'aht' else '%'}, Current {current_value:.1f}{' sec' if metric == 'aht' else '%'}, Status: {row['status']}")
-                            if row['status'] in ["Pending", "Awaiting Approval"]:
-                                with st.form(f"update_goal_form_{metric}"):
-                                    new_target = st.number_input(f"New Target for {metric}", value=float(row['target_value']), key=f"new_target_{metric}")
-                                    if st.form_submit_button(f"Update {metric} Goal"):
-                                        if set_agent_goal(supabase, st.session_state.user, metric, new_target, st.session_state.user, is_manager=False):
-                                            st.success(f"Goal update submitted for {metric}! Awaiting manager approval.")
-                        else:
-                            with st.form(f"set_goal_form_{metric}"):
-                                target_value = st.number_input(f"Set Target for {metric}", min_value=0.0, value=80.0, key=f"set_target_{metric}")
-                                if st.form_submit_button(f"Set {metric} Goal"):
-                                    if set_agent_goal(supabase, st.session_state.user, metric, target_value, st.session_state.user, is_manager=False):
-                                        st.success(f"Goal submitted for {metric}! Awaiting manager approval.")
-                else:
-                    for metric in all_metrics:
+            st.header("🎯 Your Goals")
+            all_metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
+                          'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat',
+                          'call_volume', 'overall_score']
+            response = supabase.table("goals").select("*").eq("agent_name", st.session_state.user).execute()
+            goals_df = pd.DataFrame(response.data)
+            if not goals_df.empty:
+                for metric in all_metrics:
+                    goal_row = goals_df[goals_df['metric'] == metric]
+                    if not goal_row.empty:
+                        row = goal_row.iloc[0]
+                        current_value = results[results['date'] == max(results['date'])][metric].mean() if metric in results.columns else 0.0
+                        progress = min((kpis.get(metric, 600) - current_value) / (kpis.get(metric, 600) - row['target_value']) * 100, 100) if metric == 'aht' else min(current_value / row['target_value'] * 100, 100) if row['target_value'] > 0 else 0
+                        color = "green" if progress >= 80 else "orange" if progress >= 50 else "red"
+                        st.markdown(f"<div class='progress-bar' style='background-color: {color}; width: {progress}%;'></div>", unsafe_allow_html=True)
+                        st.write(f"{metric.replace('_', ' ').title()}: Target {row['target_value']:.1f}{' sec' if metric == 'aht' else '%'}, Current {current_value:.1f}{' sec' if metric == 'aht' else '%'}, Status: {row['status']}")
+                        if row['status'] in ["Pending", "Awaiting Approval"]:
+                            with st.form(f"update_goal_form_{metric}"):
+                                new_target = st.number_input(f"New Target for {metric}", value=float(row['target_value']), key=f"new_target_{metric}")
+                                if st.form_submit_button(f"Update {metric} Goal"):
+                                    if set_agent_goal(supabase, st.session_state.user, metric, new_target, st.session_state.user, is_manager=False):
+                                        st.success(f"Goal update submitted for {metric}! Awaiting manager approval.")
+                    else:
                         with st.form(f"set_goal_form_{metric}"):
                             target_value = st.number_input(f"Set Target for {metric}", min_value=0.0, value=80.0, key=f"set_target_{metric}")
                             if st.form_submit_button(f"Set {metric} Goal"):
                                 if set_agent_goal(supabase, st.session_state.user, metric, target_value, st.session_state.user, is_manager=False):
                                     st.success(f"Goal submitted for {metric}! Awaiting manager approval.")
+            else:
+                for metric in all_metrics:
+                    with st.form(f"set_goal_form_{metric}"):
+                        target_value = st.number_input(f"Set Target for {metric}", min_value=0.0, value=80.0, key=f"set_target_{metric}")
+                        if st.form_submit_button(f"Set {metric} Goal"):
+                            if set_agent_goal(supabase, st.session_state.user, metric, target_value, st.session_state.user, is_manager=False):
+                                st.success(f"Goal submitted for {metric}! Awaiting manager approval.")
 
         with tabs[2]:  # Feedback
-            with st.expander("💬 Feedback and Responses"):
-                with st.form("feedback_form"):
-                    feedback_text = st.text_area("Submit Feedback")
-                    if st.form_submit_button("Submit Feedback"):
-                        supabase.table("feedback").insert({
-                            "agent_name": st.session_state.user,
-                            "message": feedback_text
-                        }).execute()
-                        if st.session_state.get("notifications_enabled", False):
-                            managers = supabase.table("users").select("id").eq("role", "Manager").execute()
-                            for manager in managers.data:
-                                supabase.table("notifications").insert({
-                                    "user_id": manager["id"],
-                                    "message": f"New feedback from {st.session_state.user}: {feedback_text[:50]}..."
-                                }).execute()
-                        st.success("Feedback submitted!")
-                
-                st.write("**Feedback History**")
-                feedback_df = get_feedback(supabase, st.session_state.user)
-                if not feedback_df.empty:
-                    feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
-                    feedback_df['response_timestamp'] = pd.to_datetime(feedback_df['response_timestamp'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
-                    display_columns = ['message', 'created_at', 'manager_response', 'response_timestamp']
-                    st.dataframe(feedback_df[display_columns])
-                    st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="feedback_history.csv")
-                else:
-                    st.info("No feedback submitted.")
+            st.header("💬 Feedback and Responses")
+            with st.form("feedback_form"):
+                feedback_text = st.text_area("Submit Feedback")
+                if st.form_submit_button("Submit Feedback"):
+                    supabase.table("feedback").insert({
+                        "agent_name": st.session_state.user,
+                        "message": feedback_text
+                    }).execute()
+                    if st.session_state.get("notifications_enabled", False):
+                        managers = supabase.table("users").select("id").eq("role", "Manager").execute()
+                        for manager in managers.data:
+                            supabase.table("notifications").insert({
+                                "user_id": manager["id"],
+                                "message": f"New feedback from {st.session_state.user}: {feedback_text[:50]}..."
+                            }).execute()
+                    st.success("Feedback submitted!")
+            
+            st.subheader("Feedback History")
+            feedback_df = get_feedback(supabase, st.session_state.user)
+            if not feedback_df.empty:
+                feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                feedback_df['response_timestamp'] = pd.to_datetime(feedback_df['response_timestamp'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
+                display_columns = ['message', 'created_at', 'manager_response', 'response_timestamp']
+                st.dataframe(feedback_df[display_columns])
+                st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="feedback_history.csv")
+            else:
+                st.info("No feedback submitted.")
 
         with tabs[3]:  # Tickets
-            with st.expander("📊 Zoho Ticket Data"):
-                zoho_df = get_zoho_agent_data(supabase, st.session_state.user)
-                if not zoho_df.empty:
-                    total_tickets = zoho_df['id'].nunique()
-                    st.metric("Total Tickets Handled", f"{total_tickets}")
-                    time_col = None
-                    if 'created_time' in zoho_df.columns:
-                        time_col = 'created_time'
-                    elif 'created_at' in zoho_df.columns:
-                        time_col = 'created_at'
-                    else:
-                        st.warning("No 'created_time' or 'created_at' column found in Zoho data.")
-                    
-                    if time_col:
-                        try:
-                            zoho_df[time_col] = pd.to_datetime(zoho_df[time_col]).dt.strftime('%Y-%m-%d %H:%M:%S')
-                        except Exception:
-                            st.warning("Error formatting time column.")
-                    
-                    display_cols = ['id', 'subject', 'status']
-                    if time_col:
-                        display_cols.append(time_col)
-                    display_cols.append('priority')
-                    display_cols = [col for col in display_cols if col in zoho_df.columns]
-                    
-                    st.dataframe(zoho_df[display_cols])
-                    channel_counts = zoho_df.groupby('channel')['id'].nunique().reset_index(name='Ticket Count')
-                    st.write("**Ticket Breakdown by Channel**")
-                    st.dataframe(channel_counts)
-                    try:
-                        fig = px.pie(channel_counts, values='Ticket Count', names='channel', title="Ticket Distribution by Channel")
-                        st.plotly_chart(fig)
-                    except Exception:
-                        st.error("Error plotting ticket distribution.")
-                    st.download_button(label="📥 Download Zoho Data", data=zoho_df.to_csv(index=False), file_name="zoho_agent_data.csv")
+            st.header("📊 Zoho Ticket Data")
+            zoho_df = get_zoho_agent_data(supabase, st.session_state.user)
+            if not zoho_df.empty:
+                total_tickets = zoho_df['id'].nunique()
+                st.metric("Total Tickets Handled", f"{total_tickets}")
+                time_col = None
+                if 'created_time' in zoho_df.columns:
+                    time_col = 'created_time'
+                elif 'created_at' in zoho_df.columns:
+                    time_col = 'created_at'
                 else:
-                    st.info("No Zoho data available.")
+                    st.warning("No 'created_time' or 'created_at' column found in Zoho data.")
+                
+                if time_col:
+                    try:
+                        zoho_df[time_col] = pd.to_datetime(zoho_df[time_col]).dt.strftime('%Y-%m-%d %H:%M:%S')
+                    except Exception:
+                        st.warning("Error formatting time column.")
+                
+                display_cols = ['id', 'subject', 'status']
+                if time_col:
+                    display_cols.append(time_col)
+                display_cols.append('priority')
+                display_cols = [col for col in display_cols if col in zoho_df.columns]
+                
+                st.dataframe(zoho_df[display_cols])
+                channel_counts = zoho_df.groupby('channel')['id'].nunique().reset_index(name='Ticket Count')
+                st.subheader("Ticket Breakdown by Channel")
+                st.dataframe(channel_counts)
+                try:
+                    fig = px.pie(channel_counts, values='Ticket Count', names='channel', title="Ticket Distribution by Channel")
+                    st.plotly_chart(fig)
+                except Exception:
+                    st.error("Error plotting ticket distribution.")
+                st.download_button(label="📥 Download Zoho Data", data=zoho_df.to_csv(index=False), file_name="zoho_agent_data.csv")
+            else:
+                st.info("No Zoho data available.")
 
         with tabs[4]:  # Achievements
             st.header("🏆 My Achievements")
@@ -1197,7 +1199,11 @@ def main():
             """)
             with st.spinner('Loading the reporting form...'):
                 time.sleep(2)  # Simulate loading time
-            form_url = "https://docs.google.com/forms/d/e/1FAIpQLSfWt6PzEoYv2lSL8H6WGZaL0IsDmq3I79aMWt5VOseL6CN7_Q/viewform?embedded=true"
+            # Pre-fill the "Your Name" field with the logged-in agent's name
+            # Replace 'entry.1234567890' with the actual field ID for "Your Name" from your Google Form
+            base_form_url = "https://docs.google.com/forms/d/e/1FAIpQLSfWt6PzEoYv2lSL8H6WGZaL0IsDmq3I79aMWt5VOseL6CN7_Q/viewform"
+            encoded_name = urllib.parse.quote(st.session_state.user)
+            form_url = f"{base_form_url}?entry.1234567890={encoded_name}"
             st.markdown(
                 f"""
                 <iframe src="{form_url}" width="720" height="1600" frameborder="0" marginheight="0" marginwidth="0" style="background: white;">
