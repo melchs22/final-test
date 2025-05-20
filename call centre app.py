@@ -332,42 +332,31 @@ def award_badge(supabase, agent_name, badge_name, description, awarded_by):
 # Get leaderboard
 def get_leaderboard(supabase):
     try:
-        response = supabase.table("leaderboard").select("*").execute()
+        response = supabase.table("performance").select("agent_name").execute()
         if response.data:
-            return pd.DataFrame(response.data)
-    except Exception:
-        try:
-            supabase.rpc("execute_sql", {
-                "query": """
-                    CREATE VIEW leaderboard AS
-                    SELECT 
-                        p.agent_name, 
-                        AVG(p.overall_score) as avg_score, 
-                        COUNT(DISTINCT b.id) as badges_earned
-                    FROM performance p
-                    LEFT JOIN badges b ON p.agent_name = b.agent_name
-                    GROUP BY p.agent_name
-                    ORDER BY avg_score DESC;
-                    GRANT SELECT ON leaderboard TO authenticated;
-                """
-            }).execute()
-            response = supabase.table("leaderboard").select("*").execute()
-            if response.data:
-                return pd.DataFrame(response.data)
-        except Exception:
-            response = supabase.table("performance").select("agent_name, overall_score").execute()
+            df_perf = pd.DataFrame(response.data)
+            # Compute overall_score for each agent
+            # Retrieve all performance data for calculation
+            all_perf_response = supabase.table("performance").select("*").execute()
+            if not all_perf_response.data:
+                return pd.DataFrame()
+            df_all = pd.DataFrame(all_perf_response.data)
+            # Call assess_performance to get overall_score
+            kpis = get_kpis(supabase)
+            results = assess_performance(df_all, kpis)
+            # Now, aggregate to get per-agent average overall_score
+            leaderboard_df = results.groupby("agent_name")["overall_score"].mean().reset_index()
+            # Count badges per agent
             badges_response = supabase.table("badges").select("agent_name, id").execute()
-            if response.data:
-                perf_df = pd.DataFrame(response.data)
-                badges_df = pd.DataFrame(badges_response.data) if badges_response.data else pd.DataFrame(columns=["agent_name", "id"])
-                leaderboard_df = perf_df.groupby("agent_name")["overall_score"].mean().reset_index(name="avg_score")
-                badge_counts = badges_df.groupby("agent_name")["id"].nunique().reset_index(name="badges_earned")
-                leaderboard_df = leaderboard_df.merge(badge_counts, on="agent_name", how="left").fillna({"badges_earned": 0})
-                leaderboard_df["badges_earned"] = leaderboard_df["badges_earned"].astype(int)
-                leaderboard_df = leaderboard_df.sort_values("avg_score", ascending=False)
-                return leaderboard_df
-    st.error("Unable to retrieve leaderboard.")
-    return pd.DataFrame()
+            badges_df = pd.DataFrame(badges_response.data) if badges_response.data else pd.DataFrame(columns=["agent_name", "id"])
+            badge_counts = badges_df.groupby("agent_name")["id"].nunique().reset_index(name="badges_earned")
+            leaderboard_df = leaderboard_df.merge(badge_counts, on="agent_name", how="left").fillna({"badges_earned": 0})
+            leaderboard_df["badges_earned"] = leaderboard_df["badges_earned"].astype(int)
+            leaderboard_df = leaderboard_df.sort_values("overall_score", ascending=False)
+            return leaderboard_df
+    except Exception:
+        st.error("Unable to retrieve leaderboard.")
+        return pd.DataFrame()
 
 # Create forum post
 def create_forum_post(supabase, user_name, message, category):
