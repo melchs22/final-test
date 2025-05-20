@@ -1191,11 +1191,14 @@ def main():
                 st.info("No badges earned yet. Keep up the great work!")
             leaderboard_df = get_leaderboard(supabase)
             if not leaderboard_df.empty:
-                rank = leaderboard_df.index[leaderboard_df['agent_name'] == st.session_state.user].tolist()
-                if rank:
-                    st.write(f"🏆 Your Leaderboard Rank: #{rank[0] + 1}")
-                    st.write(f"Average Score: {leaderboard_df.loc[rank[0], 'avg_score']:.1f}%")
-                    st.write(f"Badges Earned: {leaderboard_df.loc[rank[0], 'badges_earned']}")
+               rank = leaderboard_df.index[leaderboard_df['agent_name'] == st.session_state.user].tolist()
+if rank:
+    current_rank = rank[0]
+    current_score = leaderboard_df.loc[current_rank, 'overall_score']
+    total_badges = leaderboard_df.loc[current_rank, 'badges_earned']
+    st.write(f"🏆 Your Leaderboard Rank: #{current_rank + 1}")
+    st.write(f"Average Score: {current_score:.1f}%")
+    st.write(f"Badges Earned: {total_badges}")
                 st.subheader("Full Leaderboard")
                 st.dataframe(leaderboard_df)
                 fig = px.bar(leaderboard_df, x="agent_name", y="avg_score", color="agent_name", title="Agent Leaderboard")
