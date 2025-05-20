@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -336,17 +335,13 @@ def get_leaderboard(supabase):
         if response.data:
             df_perf = pd.DataFrame(response.data)
             # Compute overall_score for each agent
-            # Retrieve all performance data for calculation
             all_perf_response = supabase.table("performance").select("*").execute()
             if not all_perf_response.data:
                 return pd.DataFrame()
             df_all = pd.DataFrame(all_perf_response.data)
-            # Call assess_performance to get overall_score
             kpis = get_kpis(supabase)
             results = assess_performance(df_all, kpis)
-            # Now, aggregate to get per-agent average overall_score
             leaderboard_df = results.groupby("agent_name")["overall_score"].mean().reset_index()
-            # Count badges per agent
             badges_response = supabase.table("badges").select("agent_name, id").execute()
             badges_df = pd.DataFrame(badges_response.data) if badges_response.data else pd.DataFrame(columns=["agent_name", "id"])
             badge_counts = badges_df.groupby("agent_name")["id"].nunique().reset_index(name="badges_earned")
@@ -978,7 +973,7 @@ def main():
             leaderboard_df = get_leaderboard(supabase)
             if not leaderboard_df.empty:
                 st.dataframe(leaderboard_df)
-                fig = px.bar(leaderboard_df, x="agent_name", y="avg_score", color="agent_name", title="Agent Leaderboard")
+                fig = px.bar(leaderboard_df, x="agent_name", y="overall_score", color="agent_name", title="Agent Leaderboard")
                 st.plotly_chart(fig)
             with st.form("award_badge_form"):
                 agent = st.selectbox("Select Agent", agents)
@@ -1186,11 +1181,11 @@ def main():
                 rank = leaderboard_df.index[leaderboard_df['agent_name'] == st.session_state.user].tolist()
                 if rank:
                     st.write(f"🏆 Your Leaderboard Rank: #{rank[0] + 1}")
-                    st.write(f"Average Score: {leaderboard_df.loc[rank[0], 'avg_score']:.1f}%")
+                    st.write(f"Average Score: {leaderboard_df.loc[rank[0], 'overall_score']:.1f}%")
                     st.write(f"Badges Earned: {leaderboard_df.loc[rank[0], 'badges_earned']}")
                 st.subheader("Full Leaderboard")
                 st.dataframe(leaderboard_df)
-                fig = px.bar(leaderboard_df, x="agent_name", y="avg_score", color="agent_name", title="Agent Leaderboard")
+                fig = px.bar(leaderboard_df, x="agent_name", y="overall_score", color="agent_name", title="Agent Leaderboard")
                 st.plotly_chart(fig)
 
         with tabs[5]:  # Community Forum
