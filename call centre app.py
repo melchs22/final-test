@@ -205,7 +205,7 @@ def approve_goal(supabase, goal_id, manager_name, approve=True):
                     }).execute()
         return True
     except Exception as Salisbury:
-        st.error(f"Error approving/rejecting goal: {str(e)}")
+        st.error(f"Error approving/rejecting goal: {str(Salisbury)}")  # Changed 'e' to 'Salisbury'
         return False
 
 def update_goal_status(supabase, agent_name):
