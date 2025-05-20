@@ -5,6 +5,8 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 import requests
+import time
+import uuid
 
 # Initialize Supabase
 def init_supabase():
@@ -334,7 +336,6 @@ def get_leaderboard(supabase):
         response = supabase.table("performance").select("agent_name").execute()
         if response.data:
             df_perf = pd.DataFrame(response.data)
-            # Compute overall_score for each agent
             all_perf_response = supabase.table("performance").select("*").execute()
             if not all_perf_response.data:
                 return pd.DataFrame()
@@ -381,11 +382,11 @@ def get_forum_posts(supabase, category=None):
             df['badge_count'] = df['user_name'].map(badge_dict).fillna(0).astype(int)
             return df
         return pd.DataFrame()
-    except Exception:
-        st.error("Error retrieving forum posts.")
+    except Exception as e:
+        st.error(f"Error retrieving forum posts: {str(e)}")
         return pd.DataFrame()
 
-# Get AI coaching tips (Hugging Face Inference API)
+# Get AI coaching tips
 def get_coaching_tips(supabase, agent_name):
     try:
         perf = get_performance(supabase, agent_name)
@@ -581,6 +582,7 @@ def main():
             .agent-msg { background-color: #dcf8c6; margin-left: auto; text-align: right; }
             .manager-msg { background-color: #fff; margin-right: auto; }
             .timestamp { font-size: 0.7em; color: #666; }
+            iframe { border: 2px solid #1f77b4; border-radius: 10px; background: white; }
         """,
         "dark": """
             .reportview-container { background: linear-gradient(to right, #2c3e50, #34495e); color: white; }
@@ -595,6 +597,7 @@ def main():
             .agent-msg { background-color: #3498db; margin-left: auto; text-align: right; color: white; }
             .manager-msg { background-color: #ecf0f1; margin-right: auto; color: black; }
             .timestamp { font-size: 0.7em; color: #bdc3c7; }
+            iframe { border: 2px solid #3498db; border-radius: 10px; background: white; }
         """,
         "blue": """
             .reportview-container { background: linear-gradient(to right, #3498db, #2980b9); color: white; }
@@ -609,6 +612,7 @@ def main():
             .agent-msg { background-color: #2ecc71; margin-left: auto; text-align: right; color: white; }
             .manager-msg { background-color: #ecf0f1; margin-right: auto; color: black; }
             .timestamp { font-size: 0.7em; color: #bdc3c7; }
+            iframe { border: 2px solid #2ecc71; border-radius: 10px; background: white; }
         """
     }
     st.markdown(f"<style>{theme_css[st.session_state.theme]}</style>", unsafe_allow_html=True)
@@ -621,6 +625,7 @@ def main():
             st.stop()
         global auth
         auth = supabase.auth
+        st.session_state.supabase = supabase
     except Exception:
         st.error("Failed to connect to Supabase.")
         st.stop()
@@ -715,7 +720,10 @@ def main():
             with col3:
                 st.metric("Agent Count", len(results['agent_name'].unique()))
         
-        tabs = st.tabs(["📋 Set KPIs", "📝 Input Performance", "📊 Assessments", "🎯 Set Goals", "💬 Feedback", "🎙️ Audio Assessments", "🏆 Leaderboard", "🌐 Community Forum"])
+        tabs_list = ["📋 Set KPIs", "📝 Input Performance", "📊 Assessments", "🎯 Set Goals", "💬 Feedback", "🎙️ Audio Assessments", "🏆 Leaderboard"]
+        if st.session_state.get("notifications_enabled", False):
+            tabs_list.append("🌐 Community Forum")
+        tabs = st.tabs(tabs_list)
         
         with tabs[0]:  # Set KPIs
             st.header("📋 Set KPI Thresholds")
@@ -983,22 +991,23 @@ def main():
                     if award_badge(supabase, agent, badge_name, description, st.session_state.user):
                         st.success(f"Badge awarded to {agent}!")
 
-        with tabs[7]:  # Community Forum
-            st.header("🌐 Community Forum")
-            category = st.selectbox("Category", ["Tips", "Challenges", "General"])
-            with st.form("forum_post_form"):
-                message = st.text_area("Post a Message")
-                if st.form_submit_button("Post"):
-                    if create_forum_post(supabase, st.session_state.user, message, category):
-                        st.success("Post submitted!")
-                        st.rerun()
-            posts_df = get_forum_posts(supabase, category)
-            if not posts_df.empty:
-                for _, post in posts_df.iterrows():
-                    badge_display = f" 🏅x{post['badge_count']}" if post['badge_count'] > 0 else ""
-                    st.markdown(f"**{post['user_name']}{badge_display}** ({post['created_at'][:10]}): {post['message']}")
-            else:
-                st.info("No posts in this category.")
+        if st.session_state.get("notifications_enabled", False):
+            with tabs[7]:  # Community Forum
+                st.header("🌐 Community Forum")
+                category = st.selectbox("Category", ["Tips", "Challenges", "General"])
+                with st.form("forum_post_form"):
+                    message = st.text_area("Post a Message")
+                    if st.form_submit_button("Post"):
+                        if create_forum_post(supabase, st.session_state.user, message, category):
+                            st.success("Post submitted!")
+                            st.rerun()
+                posts_df = get_forum_posts(supabase, category)
+                if not posts_df.empty:
+                    for _, post in posts_df.iterrows():
+                        badge_display = f" 🏅x{post['badge_count']}" if post['badge_count'] > 0 else ""
+                        st.markdown(f"**{post['user_name']}{badge_display}** ({post['created_at'][:10]}): {post['message']}")
+                else:
+                    st.info("No posts in this category.")
 
     # Agent Dashboard
     elif st.session_state.role == "Agent":
@@ -1009,13 +1018,15 @@ def main():
             except:
                 st.error("Error loading profile image.")
         
-        tabs = st.tabs(["📋 Metrics", "🎯 Goals", "💬 Feedback", "📊 Tickets", "🏆 Achievements", "🌐 Community Forum", "🤖 Ask the Coach"])
-        performance_df = get_performance(supabase, st.session_state.user)
-        all_performance_df = get_performance(supabase)
-        zoho_df = get_zoho_agent_data(supabase, st.session_state.user)
-
+        tabs_list = ["📋 Metrics", "🎯 Goals", "💬 Feedback", "📊 Tickets", "🏆 Achievements", "📋 Daily Report", "🤖 Ask the Coach"]
+        if st.session_state.get("notifications_enabled", False):
+            tabs_list.append("🌐 Community Forum")
+        tabs = st.tabs(tabs_list)
+        
         with tabs[0]:  # Metrics
             with st.expander("📈 Performance Metrics"):
+                performance_df = get_performance(supabase, st.session_state.user)
+                all_performance_df = get_performance(supabase)
                 if not performance_df.empty and not all_performance_df.empty:
                     kpis = get_kpis(supabase)
                     results = assess_performance(performance_df, kpis)
@@ -1132,6 +1143,7 @@ def main():
 
         with tabs[3]:  # Tickets
             with st.expander("📊 Zoho Ticket Data"):
+                zoho_df = get_zoho_agent_data(supabase, st.session_state.user)
                 if not zoho_df.empty:
                     total_tickets = zoho_df['id'].nunique()
                     st.metric("Total Tickets Handled", f"{total_tickets}")
@@ -1176,34 +1188,27 @@ def main():
                     st.markdown(f"🎖️ **{badge['badge_name']}**: {badge['description']} (Earned on {badge['earned_at'][:10]})")
             else:
                 st.info("No badges earned yet. Keep up the great work!")
-            leaderboard_df = get_leaderboard(supabase)
-            if not leaderboard_df.empty:
-                rank = leaderboard_df.index[leaderboard_df['agent_name'] == st.session_state.user].tolist()
-                if rank:
-                    st.write(f"🏆 Your Leaderboard Rank: #{rank[0] + 1}")
-                    st.write(f"Average Score: {leaderboard_df.loc[rank[0], 'overall_score']:.1f}%")
-                    st.write(f"Badges Earned: {leaderboard_df.loc[rank[0], 'badges_earned']}")
-                st.subheader("Full Leaderboard")
-                st.dataframe(leaderboard_df)
-                fig = px.bar(leaderboard_df, x="agent_name", y="overall_score", color="agent_name", title="Agent Leaderboard")
-                st.plotly_chart(fig)
 
-        with tabs[5]:  # Community Forum
-            st.header("🌐 Community Forum")
-            category = st.selectbox("Category", ["Tips", "Challenges", "General"], key="agent_forum_category")
-            with st.form("agent_forum_post_form"):
-                message = st.text_area("Post a Message", key="agent_forum_message")
-                if st.form_submit_button("Post"):
-                    if create_forum_post(supabase, st.session_state.user, message, category):
-                        st.success("Post submitted!")
-                        st.rerun()
-            posts_df = get_forum_posts(supabase, category)
-            if not posts_df.empty:
-                for _, post in posts_df.iterrows():
-                    badge_display = f" 🏅x{post['badge_count']}" if post['badge_count'] > 0 else ""
-                    st.markdown(f"**{post['user_name']}{badge_display}** ({post['created_at'][:10]}): {post['message']}")
-            else:
-                st.info("No posts in this category.")
+        with tabs[5]:  # Daily Report
+            st.header("📋 Call Centre Daily Report")
+            st.markdown("""
+            Welcome to the **Call Centre Daily Reporting Tool**.  
+            Please take a moment to complete your daily update. Your input drives our growth! 🚀
+            """)
+            with st.spinner('Loading the reporting form...'):
+                time.sleep(2)  # Simulate loading time
+            form_url = "https://docs.google.com/forms/d/e/1FAIpQLSfWt6PzEoYv2lSL8H6WGZaL0IsDmq3I79aMWt5VOseL6CN7_Q/viewform?embedded=true"
+            st.markdown(
+                f"""
+                <iframe src="{form_url}" width="720" height="1600" frameborder="0" marginheight="0" marginwidth="0" style="background: white;">
+                    Loading…
+                </iframe>
+                """,
+                unsafe_allow_html=True
+            )
+            st.markdown("---")
+            st.success("✅ After submitting your form, thank you for your dedication today!")
+            st.caption("© 2025 BodaBoda Union | Powered by Love and Togetherness 💚")
 
         with tabs[6]:  # Ask the Coach
             st.header("🤖 Ask the Coach")
@@ -1215,6 +1220,24 @@ def main():
                         st.markdown(f"**Coach Response**: {answer}")
                     else:
                         st.error("Please enter a question.")
+
+        if st.session_state.get("notifications_enabled", False):
+            with tabs[7]:  # Community Forum
+                st.header("🌐 Community Forum")
+                category = st.selectbox("Category", ["Tips", "Challenges", "General"], key="agent_forum_category")
+                with st.form("agent_forum_post_form"):
+                    message = st.text_area("Post a Message", key="agent_forum_message")
+                    if st.form_submit_button("Post"):
+                        if create_forum_post(supabase, st.session_state.user, message, category):
+                            st.success("Post submitted!")
+                            st.rerun()
+                posts_df = get_forum_posts(supabase, category)
+                if not posts_df.empty:
+                    for _, post in posts_df.iterrows():
+                        badge_display = f" 🏅x{post['badge_count']}" if post['badge_count'] > 0 else ""
+                        st.markdown(f"**{post['user_name']}{badge_display}** ({post['created_at'][:10]}): {post['message']}")
+                else:
+                    st.info("No posts in this category.")
 
 if __name__ == "__main__":
     main()
