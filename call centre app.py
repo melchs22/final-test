@@ -210,21 +210,47 @@ def approve_goal(supabase, goal_id, manager_name, approve=True):
 
 def update_goal_status(supabase, agent_name):
     try:
+        # Fetch goals with status "Approved" or "Pending"
         goals = supabase.table("goals").select("*").eq("agent_name", agent_name).in_("status", ["Approved", "Pending"]).execute()
-        perf = get_performance(supabase, agent_name)
-        if not goals.data or perf.empty:
+        if not goals.data:
+            st.warning(f"No active goals found for {agent_name}.")
             return
+
+        # Fetch performance data
+        perf = get_performance(supabase, agent_name)
+        if perf.empty:
+            st.warning(f"No performance data found for {agent_name}.")
+            return
+
+        # Ensure date is in datetime format
+        perf['date'] = pd.to_datetime(perf['date'], errors='coerce')
+        if perf['date'].isna().all():
+            st.error(f"No valid dates found in performance data for {agent_name}.")
+            return
+
+        # Get the latest performance record
         latest_perf = perf[perf['date'] == perf['date'].max()]
+        if latest_perf.empty:
+            st.error(f"No valid latest performance data for {agent_name}.")
+            return
+
         for goal in goals.data:
             metric = goal['metric']
-            target = goal['target_value']
+            target = float(goal['target_value'])  # Ensure target is numeric
             if metric in latest_perf.columns:
-                value = latest_perf[metric].iloc[0]
+                value = float(latest_perf[metric].iloc[0])  # Ensure value is numeric
+                # Log for debugging
+                st.write(f"Debug: {metric} - Target: {target}, Current: {value}, Goal Status: {goal['status']}")
+                # Check if goal is met
                 if (metric == "aht" and value <= target) or (metric != "aht" and value >= target):
                     status = "Completed"
                 else:
-                    status = goal['status']  # Preserve Awaiting Approval or Approved
+                    status = goal['status']  # Preserve existing status
+                # Update goal status
                 supabase.table("goals").update({"status": status}).eq("id", goal['id']).execute()
+                st.write(f"Debug: Updated {metric} goal for {agent_name} to {status}")
+            else:
+                st.warning(f"Metric {metric} not found in performance data for {agent_name}.")
     except Exception as e:
         st.error(f"Error updating goal status: {str(e)}")
 
