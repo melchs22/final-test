@@ -244,6 +244,15 @@ def update_goal_status(supabase, agent_name):
     except Exception:
         st.error("Error updating goal status.")
 
+# Change password
+def change_password(supabase, agent_name, new_password):
+    try:
+        supabase.table("users").update({"password": new_password}).eq("name", agent_name).execute()
+        return True
+    except Exception:
+        st.error("Error changing password.")
+        return False
+
 # Get feedback with caching
 @st.cache_data(ttl=600)
 def get_feedback(_supabase, agent_name=None):
@@ -518,7 +527,7 @@ def assess_performance(performance_df, kpis):
 @st.cache_data(ttl=3600)
 def authenticate_user(_supabase, name, password):
     try:
-        user_response = _supabase.table("users").select("*").eq("name", name).execute()
+        user_response = _supabase.table("users").select("*").eq("name", name).eq("password", password).execute()
         if user_response.data:
             return True, name, user_response.data[0]["role"]
         return False, None, None
@@ -1051,7 +1060,7 @@ def main():
             except:
                 st.error("Error loading profile image.")
         
-        tabs_list = ["📋 Metrics", "🎯 Goals", "💬 Feedback", "📊 Tickets", "🏆 Achievements", "📋 Daily Report", "🤖 Ask the Coach"]
+        tabs_list = ["📋 Metrics", "🎯 Goals", "💬 Feedback", "📊 Tickets", "🏆 Achievements", "📋 Daily Report", "🤖 Ask the Coach", "🔒 Change Password"]
         if st.session_state.get("notifications_enabled", False):
             tabs_list.append("🌐 Community Forum")
         tabs = st.tabs(tabs_list)
@@ -1206,7 +1215,9 @@ def main():
                 st.subheader("Ticket Breakdown by Channel")
                 st.dataframe(channel_counts)
                 try:
-                    fig = px.pie(channel_counts, values='Ticket Count', names='channel', title="Ticket Distribution by Channel")
+                    fig = px.pie(channel_counts
+
+, values='Ticket Count', names='channel', title="Ticket Distribution by Channel")
                     st.plotly_chart(fig)
                 except Exception:
                     st.error("Error plotting ticket distribution.")
@@ -1265,8 +1276,32 @@ def main():
                     else:
                         st.error("Please enter a question.")
 
+        with tabs[7]:  # Change Password
+            st.header("🔒 Change Password")
+            with st.form("change_password_form"):
+                current_password = st.text_input("Current Password", type="password")
+                new_password = st.text_input("New Password", type="password")
+                confirm_password = st.text_input("Confirm New Password", type="password")
+                if st.form_submit_button("Change Password"):
+                    if not new_password or not confirm_password:
+                        st.error("Please enter both new password and confirmation.")
+                    elif new_password != confirm_password:
+                        st.error("New password and confirmation do not match.")
+                    else:
+                        # Verify current password
+                        success, _, _ = authenticate_user(supabase, st.session_state.user, current_password)
+                        if not success:
+                            st.error("Current password is incorrect.")
+                        elif change_password(supabase, st.session_state.user, new_password):
+                            st.success("Password changed successfully! Please log in again.")
+                            st.session_state.user = None
+                            st.session_state.role = None
+                            st.rerun()
+                        else:
+                            st.error("Failed to change password.")
+
         if st.session_state.get("notifications_enabled", False):
-            with tabs[7]:  # Community Forum
+            with tabs[8]:  # Community Forum
                 st.header("🌐 Community Forum")
                 category = st.selectbox("Category", ["Tips", "Challenges", "General"], key="agent_forum_category")
                 with st.form("agent_forum_post_form"):
