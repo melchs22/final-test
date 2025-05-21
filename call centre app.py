@@ -1319,7 +1319,7 @@ def main():
                             st.error("Failed to change password.")
 
         if st.session_state.get("notifications_enabled", False):
-            with tabs[8]:  # Community Forum
+            with tabs[8]:   Community Forum
                 st.header("🌐 Community Forum")
                 category = st.selectbox("Category", ["Tips", "Challenges", "General"], key="agent_forum_category")
                 with st.form("agent_forum_post_form"):
