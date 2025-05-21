@@ -244,13 +244,22 @@ def update_goal_status(supabase, agent_name):
     except Exception:
         st.error("Error updating goal status.")
 
-# Change password
+# Change password (verify update and add debugging)
 def change_password(supabase, agent_name, new_password):
     try:
-        supabase.table("users").update({"password": new_password}).eq("name", agent_name).execute()
-        return True
-    except Exception:
-        st.error("Error changing password.")
+        # Update the password
+        response = supabase.table("users").update({"password": new_password}).eq("name", agent_name).execute()
+        # Verify the update
+        updated_user = supabase.table("users").select("password").eq("name", agent_name).execute()
+        if updated_user.data and updated_user.data[0]["password"] == new_password:
+            st.write(f"DEBUG: Password updated successfully for {agent_name} in database.")
+            return True
+        else:
+            st.error("Password update failed: Database not updated.")
+            st.write(f"DEBUG: Update response: {response.data}")
+            return False
+    except Exception as e:
+        st.error(f"Error changing password: {str(e)}")
         return False
 
 # Get feedback with caching
@@ -523,16 +532,18 @@ def assess_performance(performance_df, kpis):
         results['overall_score'] = results[pass_columns].mean(axis=1) * 100
     return results
 
-# Authenticate user
-@st.cache_data(ttl=3600)
+# Authenticate user (no caching to always check the latest password)
 def authenticate_user(_supabase, name, password):
     try:
         user_response = _supabase.table("users").select("*").eq("name", name).eq("password", password).execute()
         if user_response.data:
+            st.write(f"DEBUG: Authenticated user {name} with password (hidden). Found role: {user_response.data[0]['role']}")
             return True, name, user_response.data[0]["role"]
+        else:
+            st.write(f"DEBUG: Authentication failed for user {name} with provided password.")
         return False, None, None
-    except Exception:
-        st.error("Authentication error.")
+    except Exception as e:
+        st.error(f"Authentication error: {str(e)}")
         return False, None, None
 
 # Setup real-time polling
@@ -673,6 +684,7 @@ def main():
         st.session_state.last_refresh = datetime.now()
         st.session_state.cleared_chats = set()
         st.session_state.theme = "light"
+        st.session_state.authenticated = False  # Track authentication state
 
     # Theme selector
     with st.sidebar:
@@ -692,6 +704,7 @@ def main():
                 if success:
                     st.session_state.user = user
                     st.session_state.role = role
+                    st.session_state.authenticated = True
                     st.success(f"Logged in as {user} ({role})")
                     st.rerun()
                 else:
@@ -702,6 +715,9 @@ def main():
     if st.sidebar.button("Logout"):
         st.session_state.user = None
         st.session_state.role = None
+        st.session_state.authenticated = False
+        st.session_state.clear()  # Clear all session state
+        st.write("DEBUG: Session cleared on logout.")
         st.rerun()
 
     # Notifications
@@ -1215,9 +1231,7 @@ def main():
                 st.subheader("Ticket Breakdown by Channel")
                 st.dataframe(channel_counts)
                 try:
-                    fig = px.pie(channel_counts
-
-, values='Ticket Count', names='channel', title="Ticket Distribution by Channel")
+                    fig = px.pie(channel_counts, values='Ticket Count', names='channel', title="Ticket Distribution by Channel")
                     st.plotly_chart(fig)
                 except Exception:
                     st.error("Error plotting ticket distribution.")
@@ -1294,8 +1308,12 @@ def main():
                             st.error("Current password is incorrect.")
                         elif change_password(supabase, st.session_state.user, new_password):
                             st.success("Password changed successfully! Please log in again.")
+                            # Force logout
                             st.session_state.user = None
                             st.session_state.role = None
+                            st.session_state.authenticated = False
+                            st.session_state.clear()  # Clear all session state
+                            st.write("DEBUG: Session cleared after password change.")
                             st.rerun()
                         else:
                             st.error("Failed to change password.")
