@@ -605,6 +605,20 @@ def update_assessment_notes(supabase, audio_id, notes):
         st.error("Error updating assessment notes.")
         return False
 
+# Calculate goal progress
+def calculate_goal_progress(goal, perf_df):
+    if perf_df.empty:
+        return 0.0
+    latest_perf = perf_df[perf_df['date'] == perf_df['date'].max()]
+    if goal['metric'] in latest_perf.columns:
+        current = float(latest_perf[goal['metric']].iloc[0])
+        target = float(goal['target_value'])
+        if goal['metric'] == 'aht':
+            return max(0, min(100, (target / current) * 100)) if current > 0 else 0
+        else:
+            return max(0, min(100, (current / target) * 100)) if target > 0 else 0
+    return 0.0
+
 # Main application
 def main():
     st.set_page_config(page_title="Call Center Assessment System", layout="wide")
@@ -928,46 +942,107 @@ def main():
                 feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
                 feedback_df['response_timestamp'] = pd.to_datetime(feedback_df['response_timestamp'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
                 display_columns = ['agent_name', 'message', 'created_at', 'manager_response', 'response_timestamp']
+                st.subheader("Feedback History")
                 st.dataframe(feedback_df[display_columns])
-                feedback_id = st.selectbox("Select Feedback to Respond", feedback_df['id'].tolist(), format_func=lambda x: f"Feedback {x} from {feedback_df[feedback_df['id'] == x]['agent_name'].iloc[0]}")
-                with st.form("respond_feedback_form"):
-                    response = st.text_area("Your Response")
-                    if st.form_submit_button("Submit Response"):
-                        if respond_to_feedback(supabase, feedback_id, response, st.session_state.user):
-                            get_feedback.clear()
-                            st.success("Response submitted!")
+                st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="agent_feedback.csv")
+
+                st.subheader("Agent Conversations")
+                agents = feedback_df['agent_name'].unique()
+                agents = [a for a in agents if a not in st.session_state.get('cleared_chats', set())]
+                for agent in agents:
+                    agent_df = feedback_df[feedback_df['agent_name'] == agent].sort_values('created_at', ascending=False)
+                    with st.expander(f"{agent} ({len(agent_df)} messages)"):
+                        if st.button("Clear Chat", key=f"clear_{agent}"):
+                            if 'cleared_chats' not in st.session_state:
+                                st.session_state.cleared_chats = set()
+                            st.session_state.cleared_chats.add(agent)
                             st.rerun()
-            else:
-                st.info("No feedback available.")
+                        st.markdown('<div class="feedback-container">', unsafe_allow_html=True)
+                        for _, row in agent_df.iterrows():
+                            st.markdown('<div class="feedback-item agent-msg">', unsafe_allow_html=True)
+                            st.write(row['message'])
+                            st.markdown(f'<div class="timestamp">{row["created_at"]}</div>', unsafe_allow_html=True)
+                            st.markdown('</div>', unsafe_allow_html=True)
+                            if pd.notnull(row['manager_response']):
+                                st.markdown('<div class="feedback-item manager-msg">', unsafe_allow_html=True)
+                                st.write(row['manager_response'])
+                                st.markdown(f'<div class="timestamp">{row["response_timestamp"]}</div>', unsafe_allow_html=True)
+                                st.markdown('</div>', unsafe_allow_html=True)
+                            if row['id'] != (agent_df.iloc[0]['id'] if not agent_df.empty else None):
+                                if st.button("Reply", key=f"reply_{row['id']}"):
+                                    st.session_state.reply_to_feedback_id = row['id']
+                        st.markdown('</div>', unsafe_allow_html=True)
+
+                with st.form("respond_feedback_form"):
+                    if 'reply_to_feedback_id' in st.session_state:
+                        feedback_id = st.session_state.reply_to_feedback_id
+                        selected_feedback = feedback_df[feedback_df['id'] == feedback_id]
+                        if not selected_feedback.empty:
+                            st.write(f"Replying to {selected_feedback['agent_name'].iloc[0]}'s feedback: {selected_feedback['message'].iloc[0][:50]}...")
+                        else:
+                            st.warning("Selected feedback not found.")
+                            feedback_id = None
+                    else:
+                        latest_feedback = feedback_df.sort_values('created_at', ascending=False).iloc[0] if not feedback_df.empty else None
+                        feedback_id = latest_feedback['id'] if latest_feedback is not None and latest_feedback['agent_name'] not in st.session_state.get('cleared_chats', set()) else None
+                        if feedback_id:
+                            st.write(f"Replying to latest feedback from {latest_feedback['agent_name']}: {latest_feedback['message'][:50]}...")
+                        else:
+                            st.write("No feedback available to reply to.")
+                    manager_response = st.text_area("Your Response", key="manager_response")
+                    col1, col2 = st.columns([3, 1])
+                    with col2:
+                        submit = st.form_submit_button("Send")
+                    if submit and feedback_id and manager_response.strip():
+                        if respond_to_feedback(supabase, feedback_id, manager_response, st.session_state.user):
+                            get_feedback.clear()
+                            st.success("Response sent!")
+                            if 'reply_to_feedback_id' in st.session_state:
+                                del st.session_state.reply_to_feedback_id
+                            st.rerun()
+                        else:
+                            st.error("Failed to send response.")
+                    elif submit:
+                        st.error("Please provide a response and ensure a feedback is selected.")
 
         with tabs[5]:  # Audio Assessments
             st.header("🎙️ Audio Assessments")
-            st.subheader("Upload Audio")
-            with st.form("audio_upload_form"):
-                agent = st.selectbox("Select Agent", agents, key="audio_agent")
-                audio_file = st.file_uploader("Upload Audio File", type=['mp3', 'wav'])
-                if st.form_submit_button("Upload"):
-                    if audio_file:
-                        if upload_audio(supabase, agent, audio_file, st.session_state.user):
-                            get_audio_assessments.clear()
-                            st.success(f"Audio uploaded for {agent}!")
-                            st.rerun()
-            
-            st.subheader("Assess Audio")
+            st.subheader("Upload Audio for Agent")
+            agents = [user["name"] for user in supabase.table("users").select("*").eq("role", "Agent").execute().data]
+            if not agents:
+                st.warning("No agents found.")
+            else:
+                with st.form("audio_upload_form"):
+                    selected_agent = st.selectbox("Select Agent", agents, key="audio_agent")
+                    audio_file = st.file_uploader("Upload Audio File", type=["mp3", "wav"], key="audio_file")
+                    if st.form_submit_button("Upload Audio"):
+                        if audio_file:
+                            if upload_audio(supabase, selected_agent, audio_file, st.session_state.user):
+                                get_audio_assessments.clear()
+                                st.success(f"Audio uploaded for {selected_agent}!")
+                            else:
+                                st.error("Failed to upload audio.")
+                        else:
+                            st.error("Please select an audio file to upload.")
+
+            st.subheader("Review Audio Assessments")
             audio_df = get_audio_assessments(supabase)
             if not audio_df.empty:
-                audio_id = st.selectbox("Select Audio to Assess", audio_df['id'].tolist(), 
-                                       format_func=lambda x: f"Audio {x} from {audio_df[audio_df['id'] == x]['agent_name'].iloc[0]}")
-                selected_audio = audio_df[audio_df['id'] == audio_id]
-                if not selected_audio.empty:
-                    st.audio(selected_audio['audio_url'].iloc[0])
-                    with st.form("audio_assessment_form"):
-                        notes = st.text_area("Assessment Notes", value=selected_audio['assessment_notes'].iloc[0])
-                        if st.form_submit_button("Submit Assessment"):
-                            if update_assessment_notes(supabase, audio_id, notes):
+                audio_df['upload_timestamp'] = pd.to_datetime(audio_df['upload_timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                for _, row in audio_df.iterrows():
+                    with st.expander(f"{row['agent_name']} - {row['upload_timestamp']}"):
+                        st.audio(row['audio_url'], format="audio/mp3")
+                        st.write(f"Uploaded by: {row['uploaded_by']}")
+                        notes = st.text_area("Assessment Notes", value=row['assessment_notes'], key=f"notes_{row['id']}")
+                        if st.button("Save Notes", key=f"save_notes_{row['id']}"):
+                            if update_assessment_notes(supabase, row['id'], notes):
                                 get_audio_assessments.clear()
-                                st.success("Assessment notes updated!")
+                                st.success("Notes saved!")
                                 st.rerun()
+                            else:
+                                st.error("Failed to save notes.")
+                st.dataframe(audio_df[['agent_name', 'upload_timestamp', 'uploaded_by', 'assessment_notes']])
+                st.download_button(label="📥 Download Audio Assessments", data=audio_df.to_csv(index=False), file_name="audio_assessments.csv")
             else:
                 st.info("No audio assessments available.")
 
@@ -975,17 +1050,24 @@ def main():
             st.header("🏆 Leaderboard")
             leaderboard_df = get_leaderboard(supabase)
             if not leaderboard_df.empty:
-                leaderboard_df['overall_score'] = leaderboard_df['overall_score'].round(1)
                 st.dataframe(leaderboard_df)
-            else:
-                st.info("No leaderboard data available.")
+                fig = px.bar(leaderboard_df, x="agent_name", y="overall_score", color="agent_name", title="Agent Leaderboard")
+                st.plotly_chart(fig)
+            with st.form("award_badge_form"):
+                agent = st.selectbox("Select Agent", agents)
+                badge_name = st.text_input("Badge Name")
+                description = st.text_area("Description")
+                if st.form_submit_button("Award Badge"):
+                    if award_badge(supabase, agent, badge_name, description, st.session_state.user):
+                        get_leaderboard.clear()
+                        st.success(f"Badge awarded to {agent}!")
 
         if st.session_state.get("notifications_enabled", False):
             with tabs[7]:  # Community Forum
                 st.header("🌐 Community Forum")
-                category = st.selectbox("Category", ["Tips", "Challenges", "General"], key="manager_forum_category")
-                with st.form("manager_forum_post_form"):
-                    message = st.text_area("Post a Message", key="manager_forum_message")
+                category = st.selectbox("Category", ["Tips", "Challenges", "General"])
+                with st.form("forum_post_form"):
+                    message = st.text_area("Post a Message")
                     if st.form_submit_button("Post"):
                         if create_forum_post(supabase, st.session_state.user, message, category):
                             get_forum_posts.clear()
@@ -1015,147 +1097,213 @@ def main():
         tabs = st.tabs(tabs_list)
         
         with tabs[0]:  # Metrics
-            st.header("📋 Your Metrics")
-            perf = get_performance(supabase, st.session_state.user)
-            if not perf.empty:
-                latest_perf = perf[perf['date'] == perf['date'].max()]
-                metrics = ['attendance', 'quality_score', 'csat', 'resolution_rate', 'aht', 'call_volume']
+            st.header("📈 Performance Metrics")
+            performance_df = get_performance(supabase, st.session_state.user)
+            all_performance_df = get_performance(supabase)
+            if not performance_df.empty and not all_performance_df.empty:
+                kpis = get_kpis(supabase)
+                results = assess_performance(performance_df, kpis)
+                all_results = assess_performance(all_performance_df, kpis)
+                avg_overall_score = results['overall_score'].mean()
+                avg_metrics = results[['overall_score', 'quality_score', 'csat', 'attendance', 
+                                     'resolution_rate', 'contact_success_rate', 'aht', 'talk_time']].mean()
+                total_call_volume = results['call_volume'].sum()
+                
+                if avg_overall_score > 90:
+                    st.markdown('<span style="color: gold; font-weight: bold;">🏆 Top Performer</span>', unsafe_allow_html=True)
+                
                 col1, col2, col3 = st.columns(3)
-                for i, metric in enumerate(metrics):
-                    if metric in latest_perf.columns:
-                        value = latest_perf[metric].iloc[0]
-                        unit = ' sec' if metric == 'aht' else '' if metric == 'call_volume' else '%'
-                        with [col1, col2, col3][i % 3]:
-                            st.metric(metric.replace('_', ' ').title(), f"{value:.1f}{unit}")
+                with col1:
+                    st.metric("Overall Score", f"{avg_metrics['overall_score']:.1f}%")
+                    st.metric("Quality Score", f"{avg_metrics['quality_score']:.1f}%")
+                    st.metric("Customer Satisfaction", f"{avg_metrics['csat']:.1f}%")
+                with col2:
+                    st.metric("Attendance", f"{avg_metrics['attendance']:.1f}%")
+                    st.metric("Resolution Rate", f"{avg_metrics['resolution_rate']:.1f}%")
+                    st.metric("Contact Success", f"{avg_metrics['contact_success_rate']:.1f}%")
+                with col3:
+                    st.metric("Average Handle Time", f"{avg_metrics['aht']:.1f} sec")
+                    st.metric("Talk Time", f"{avg_metrics['talk_time']:.1f} sec")
+                    st.metric("Call Volume", f"{total_call_volume:.0f} calls")
+                
+                st.subheader("Performance Profile")
                 fig = plot_performance_chart(supabase, st.session_state.user)
                 if fig:
                     st.plotly_chart(fig)
+                
+                st.subheader("Comparison to Peers")
+                peer_avg = all_results.groupby('agent_name')['overall_score'].mean().reset_index()
+                peer_avg = peer_avg[peer_avg['agent_name'] != st.session_state.user]
+                fig3 = px.box(peer_avg, y='overall_score', title="Peer Score Distribution", labels={'overall_score': 'Score (%)'}, points="all")
+                fig3.add_hline(y=avg_overall_score, line_dash="dash", line_color="red", annotation_text=f"Your Score: {avg_overall_score:.1f}%")
+                st.plotly_chart(fig3)
+                
+                st.subheader("🤖 Coaching Tips")
+                tips = get_coaching_tips(supabase, st.session_state.user)
+                if tips:
+                    for tip in tips:
+                        st.markdown(f"**{tip['metric'].replace('_', ' ').title()}**: {tip['tip']}")
+                else:
+                    st.info("You're performing well! No coaching tips needed.")
             else:
                 st.info("No performance data available.")
-            
-            st.subheader("Coaching Tips")
-            tips = get_coaching_tips(supabase, st.session_state.user)
-            if tips:
-                for tip in tips:
-                    st.markdown(f"- **{tip['metric'].replace('_', ' ').title()}**: {tip['tip']}")
-            else:
-                st.info("No coaching tips available.")
 
         with tabs[1]:  # Goals
             st.header("🎯 Your Goals")
-            goals = supabase.table("goals").select("*").eq("agent_name", st.session_state.user).execute()
-            if goals.data:
-                goals_df = pd.DataFrame(goals.data)
+            all_metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
+                          'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat',
+                          'call_volume', 'overall_score']
+            response = supabase.table("goals").select("*").eq("agent_name", st.session_state.user).execute()
+            goals_df = pd.DataFrame(response.data)
+            if not goals_df.empty:
                 goals_df['progress'] = goals_df.apply(
                     lambda row: calculate_goal_progress(row, get_performance(supabase, st.session_state.user)), axis=1)
                 for _, goal in goals_df.iterrows():
                     with st.container():
                         st.write(f"**{goal['metric'].replace('_', ' ').title()}**: Target {goal['target_value']:.1f}{' sec' if goal['metric'] == 'aht' else ''}")
                         st.write(f"Status: {goal['status']}")
-                        st.progress(min(goal['progress'], 100.0) / 100.0)
-            else:
-                st.info("No goals set.")
-            
-            st.subheader("Set a New Goal")
-            with st.form("agent_goal_form"):
-                metric = st.selectbox("Metric", ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
-                                                'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat',
-                                                'call_volume'], key="agent_goal_metric")
-                target_value = st.number_input("Target Value", min_value=0.0, value=80.0)
-                if st.form_submit_button("Submit Goal"):
-                    if set_agent_goal(supabase, st.session_state.user, metric, target_value, st.session_state.user):
-                        st.success("Goal submitted for approval!")
-                        st.rerun()
+                        progress = min(goal['progress'], 100.0)
+                        color = "green" if progress >= 80 else "orange" if progress >= 50 else "red"
+                        st.markdown(f"<div class='progress-bar' style='background-color: {color}; width: {progress}%;'></div>", unsafe_allow_html=True)
+                        if goal['status'] in ["Pending", "Awaiting Approval"]:
+                            with st.form(f"update_goal_form_{goal['metric']}"):
+                                new_target = st.number_input(f"New Target for {goal['metric']}", value=float(goal['target_value']), key=f"new_target_{goal['metric']}")
+                                if st.form_submit_button(f"Update {goal['metric']} Goal"):
+                                    if set_agent_goal(supabase, st.session_state.user, goal['metric'], new_target, st.session_state.user, is_manager=False):
+                                        st.success(f"Goal update submitted for {goal['metric']}!")
+                                        st.rerun()
+            for metric in all_metrics:
+                if metric not in goals_df['metric'].values:
+                    with st.form(f"set_goal_form_{metric}"):
+                        target_value = st.number_input(f"Set Target for {metric}", min_value=0.0, value=80.0, key=f"set_target_{metric}")
+                        if st.form_submit_button(f"Set {metric} Goal"):
+                            if set_agent_goal(supabase, st.session_state.user, metric, target_value, st.session_state.user, is_manager=False):
+                                st.success(f"Goal submitted for {metric}! Awaiting manager approval.")
+                                st.rerun()
 
         with tabs[2]:  # Feedback
-            st.header("💬 Your Feedback")
-            feedback_df = get_feedback(supabase, st.session_state.user)
-            if not feedback_df.empty:
-                with st.container():
-                    for _, row in feedback_df.iterrows():
-                        st.markdown(f"<div class='feedback-item agent-msg'><b>You</b> ({row['created_at'][:10]}): {row['message']}</div>", unsafe_allow_html=True)
-                        if pd.notna(row['manager_response']):
-                            st.markdown(f"<div class='feedback-item manager-msg'><b>Manager</b> ({row['response_timestamp'][:10]}): {row['manager_response']}</div>", unsafe_allow_html=True)
-            else:
-                st.info("No feedback available.")
-            
-            with st.form("agent_feedback_form"):
-                feedback = st.text_area("Submit Feedback")
-                if st.form_submit_button("Submit"):
-                    if feedback.strip():
+            st.header("💬 Feedback and Responses")
+            with st.form("feedback_form"):
+                feedback_text = st.text_area("Submit Feedback")
+                if st.form_submit_button("Submit Feedback"):
+                    if feedback_text.strip():
                         supabase.table("feedback").insert({
                             "agent_name": st.session_state.user,
-                            "message": feedback,
+                            "message": feedback_text,
                             "created_at": datetime.now().isoformat()
                         }).execute()
+                        if st.session_state.get("notifications_enabled", False):
+                            managers = supabase.table("users").select("id").eq("role", "Manager").execute()
+                            for manager in managers.data:
+                                supabase.table("notifications").insert({
+                                    "user_id": manager["id"],
+                                    "message": f"New feedback from {st.session_state.user}: {feedback_text[:50]}..."
+                                }).execute()
                         get_feedback.clear()
                         st.success("Feedback submitted!")
                         st.rerun()
+                    else:
+                        st.error("Please enter feedback text.")
+            
+            st.subheader("Feedback History")
+            feedback_df = get_feedback(supabase, st.session_state.user)
+            if not feedback_df.empty:
+                feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                feedback_df['response_timestamp'] = pd.to_datetime(feedback_df['response_timestamp'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
+                display_columns = ['message', 'created_at', 'manager_response', 'response_timestamp']
+                st.dataframe(feedback_df[display_columns])
+                st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="feedback_history.csv")
+            else:
+                st.info("No feedback submitted.")
 
         with tabs[3]:  # Tickets
-            st.header("📊 Your Tickets")
-            tickets = get_zoho_agent_data(supabase, st.session_state.user)
-            if not tickets.empty:
-                tickets['created_time'] = pd.to_datetime(tickets['created_time'], errors='coerce')
-                tickets['due_date'] = pd.to_datetime(tickets['due_date'], errors='coerce')
-                display_columns = ['id', 'subject', 'status', 'priority', 'created_time', 'due_date']
-                st.dataframe(tickets[display_columns])
-                st.download_button(label="📥 Download Tickets", data=tickets[display_columns].to_csv(index=False), file_name="tickets.csv")
+            st.header("📊 Zoho Ticket Data")
+            zoho_df = get_zoho_agent_data(supabase, st.session_state.user)
+            if not zoho_df.empty:
+                total_tickets = zoho_df['id'].nunique()
+                st.metric("Total Tickets Handled", f"{total_tickets}")
+                time_col = None
+                if 'created_time' in zoho_df.columns:
+                    time_col = 'created_time'
+                elif 'created_at' in zoho_df.columns:
+                    time_col = 'created_at'
+                else:
+                    st.warning("No 'created_time' or 'created_at' column found in Zoho data.")
+                
+                if time_col:
+                    try:
+                        zoho_df[time_col] = pd.to_datetime(zoho_df[time_col]).dt.strftime('%Y-%m-%d %H:%M:%S')
+                    except Exception:
+                        st.warning("Error formatting time column.")
+                
+                display_cols = ['id', 'subject', 'status']
+                if time_col:
+                    display_cols.append(time_col)
+                display_cols.append('priority')
+                display_cols = [col for col in display_cols if col in zoho_df.columns]
+                
+                st.dataframe(zoho_df[display_cols])
+                channel_counts = zoho_df.groupby('channel')['id'].nunique().reset_index(name='Ticket Count')
+                st.subheader("Ticket Breakdown by Channel")
+                st.dataframe(channel_counts)
+                try:
+                    fig = px.pie(channel_counts, values='Ticket Count', names='channel', title="Ticket Distribution by Channel")
+                    st.plotly_chart(fig)
+                except Exception:
+                    st.error("Error plotting ticket distribution.")
+                st.download_button(label="📥 Download Zoho Data", data=zoho_df.to_csv(index=False), file_name="zoho_agent_data.csv")
             else:
-                st.info("No tickets found.")
+                st.info("No Zoho data available.")
 
         with tabs[4]:  # Achievements
-            st.header("🏆 Your Achievements")
-            badges = supabase.table("badges").select("*").eq("agent_name", st.session_state.user).execute()
-            if badges.data:
-                for badge in badges.data:
-                    st.markdown(f"- **{badge['badge_name']}**: {badge['description']} (Earned on {badge['earned_at'][:10]})")
+            st.header("🏆 My Achievements")
+            badges_df = supabase.table("badges").select("*").eq("agent_name", st.session_state.user).execute()
+            completed_goals = supabase.table("goals").select("*").eq("agent_name", st.session_state.user).eq("status", "Completed").execute()
+            if badges_df.data or completed_goals.data:
+                if badges_df.data:
+                    for badge in badges_df.data:
+                        st.markdown(f"🎖️ **{badge['badge_name']}**: {badge['description']} (Earned on {badge['earned_at'][:10]})")
+                if completed_goals.data:
+                    st.subheader("Completed Goals")
+                    for goal in completed_goals.data:
+                        st.markdown(f"🎯 **{goal['metric'].replace('_', ' ').title()} Goal Achieved**: Target {goal['target_value']:.1f}{' sec' if goal['metric'] == 'aht' else '%'} (Completed on {goal['approved_at'][:10] if goal['approved_at'] else goal['created_at'][:10]})")
             else:
-                st.info("No badges earned yet.")
-            
-            leaderboard_df = get_leaderboard(supabase)
-            if not leaderboard_df.empty:
-                rank = leaderboard_df[leaderboard_df['agent_name'] == st.session_state.user].index[0] + 1 if st.session_state.user in leaderboard_df['agent_name'].values else "N/A"
-                score = leaderboard_df[leaderboard_df['agent_name'] == st.session_state.user]['overall_score'].iloc[0] if st.session_state.user in leaderboard_df['agent_name'].values else 0
-                st.write(f"**Leaderboard Rank**: {rank}")
-                st.write(f"**Overall Score**: {score:.1f}%")
+                st.info("No badges or completed goals yet. Keep up the great work!")
 
         with tabs[5]:  # Daily Report
-            st.header("📋 Daily Report")
-            today = datetime.now().strftime("%Y-%m-%d")
-            perf = get_performance(supabase, st.session_state.user)
-            if not perf.empty:
-                daily_perf = perf[perf['date'] == today]
-                if not daily_perf.empty:
-                    metrics = ['attendance', 'quality_score', 'csat', 'aht', 'call_volume']
-                    for metric in metrics:
-                        if metric in daily_perf.columns:
-                            value = daily_perf[metric].iloc[0]
-                            unit = ' sec' if metric == 'aht' else '' if metric == 'call_volume' else '%'
-                            st.write(f"**{metric.replace('_', ' ').title()}**: {value:.1f}{unit}")
-                else:
-                    st.info("No performance data for today.")
-            tickets = get_zoho_agent_data(supabase, st.session_state.user)
-            if not tickets.empty:
-                today_tickets = tickets[tickets['created_time'].dt.date == datetime.now().date()]
-                if not today_tickets.empty:
-                    st.subheader("Today's Tickets")
-                    st.dataframe(today_tickets[['id', 'subject', 'status', 'priority']])
-                else:
-                    st.info("No tickets created today.")
-            else:
-                st.info("No tickets available.")
+            st.header("📋 Call Centre Daily Report")
+            st.markdown("""
+            Welcome to the **Call Centre Daily Reporting Tool**.  
+            Please take a moment to complete your daily update. Your input drives our growth! 🚀
+            """)
+            with st.spinner('Loading the reporting form...'):
+                time.sleep(2)  # Simulate loading time
+            base_form_url = "https://docs.google.com/forms/d/e/1FAIpQLSfWt6PzEoYv2lSL8H6WGZaL0IsDmq3I79aMWt5VOseL6CN7_Q/viewform"
+            encoded_name = urllib.parse.quote(st.session_state.user)
+            form_url = f"{base_form_url}?entry.1234567890={encoded_name}"
+            st.markdown(
+                f"""
+                <iframe src="{form_url}" width="720" height="1600" frameborder="0" marginheight="0" marginwidth="0" style="background: white;">
+                    Loading…
+                </iframe>
+                """,
+                unsafe_allow_html=True
+            )
+            st.markdown("---")
+            st.success("✅ After submitting your form, thank you for your dedication today!")
+            st.caption("© 2025 BodaBoda Union | Powered by Love and Togetherness 💚")
 
         with tabs[6]:  # Ask the Coach
             st.header("🤖 Ask the Coach")
-            with st.form("coach_form"):
-                question = st.text_area("Ask a performance-related question")
+            with st.form("ask_coach_form"):
+                question = st.text_area("Ask a question about improving your performance (e.g., 'How can I improve my CSAT?')")
                 if st.form_submit_button("Ask"):
                     if question.strip():
                         answer = ask_coach(supabase, st.session_state.user, question)
-                        st.markdown(f"**Coach**: {answer}")
+                        st.markdown(f"**Coach Response**: {answer}")
+                        st.session_state.last_coach_answer = answer
                     else:
-                        st.warning("Please enter a question.")
+                        st.error("Please enter a question.")
 
         with tabs[7]:  # Change Password
             st.header("🔒 Change Password")
@@ -1178,7 +1326,6 @@ def main():
                             st.session_state.role = None
                             st.session_state.authenticated = False
                             st.session_state.clear()
-                            st.session_state.notifications_enabled = False
                             st.write("DEBUG: Session cleared after password change.")
                             st.rerun()
                         else:
@@ -1202,20 +1349,6 @@ def main():
                         st.markdown(f"**{post['user_name']}{badge_display}** ({post['created_at'][:10]}): {post['message']}")
                 else:
                     st.info("No posts in this category.")
-
-# Helper function for goal progress
-def calculate_goal_progress(goal, perf_df):
-    if perf_df.empty:
-        return 0.0
-    latest_perf = perf_df[perf_df['date'] == perf_df['date'].max()]
-    if goal['metric'] in latest_perf.columns:
-        current = float(latest_perf[goal['metric']].iloc[0])
-        target = float(goal['target_value'])
-        if goal['metric'] == 'aht':
-            return max(0, min(100, (target / current) * 100)) if current > 0 else 0
-        else:
-            return max(0, min(100, (current / target) * 100)) if target > 0 else 0
-    return 0.0
 
 if __name__ == "__main__":
     main()
