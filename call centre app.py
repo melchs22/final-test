@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -10,7 +9,8 @@ import time
 import uuid
 import urllib.parse
 
-# Initialize Supabase
+# Initialize Supabase with caching
+@st.cache_resource
 def init_supabase():
     url = st.secrets["supabase"]["url"]
     key = st.secrets["supabase"]["key"]
@@ -19,7 +19,8 @@ def init_supabase():
     return create_client(url, key)
 
 # Check database tables
-def check_db(supabase):
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def check_db(_supabase):
     required_tables = ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications", "audio_assessments", "badges", "forum_posts"]
     critical_tables = ["users", "goals", "feedback", "performance"]
     missing_critical = []
@@ -27,7 +28,7 @@ def check_db(supabase):
     
     for table in required_tables:
         try:
-            supabase.table(table).select("count").limit(1).execute()
+            _supabase.table(table).select("count").limit(1).execute()
         except Exception:
             if table in critical_tables:
                 missing_critical.append(table)
@@ -62,10 +63,11 @@ def save_kpis(supabase, kpis):
         st.error("Error saving KPIs.")
         return False
 
-# Get KPIs
-def get_kpis(supabase):
+# Get KPIs with caching
+@st.cache_data(ttl=3600)
+def get_kpis(_supabase):
     try:
-        response = supabase.table("kpis").select("*").execute()
+        response = _supabase.table("kpis").select("*").execute()
         kpis = {}
         for row in response.data:
             metric = row["metric"]
@@ -114,10 +116,11 @@ def save_performance(supabase, agent_name, data):
         st.error("Error saving performance data.")
         return False
 
-# Get performance data
-def get_performance(supabase, agent_name=None):
+# Get performance data with caching
+@st.cache_data(ttl=600)  # Cache for 10 minutes
+def get_performance(_supabase, agent_name=None):
     try:
-        query = supabase.table("performance").select("*")
+        query = _supabase.table("performance").select("*")
         if agent_name:
             query = query.eq("agent_name", agent_name)
         response = query.execute()
@@ -136,14 +139,15 @@ def get_performance(supabase, agent_name=None):
         st.error("Error retrieving performance data.")
         return pd.DataFrame()
 
-# Get Zoho agent data
-def get_zoho_agent_data(supabase, agent_name=None):
+# Get Zoho agent data with caching
+@st.cache_data(ttl=3600)
+def get_zoho_agent_data(_supabase, agent_name=None):
     try:
         all_data = []
         chunk_size = 1000
         offset = 0
         while True:
-            query = supabase.table("zoho_agent_data").select("*").range(offset, offset + chunk_size - 1)
+            query = _supabase.table("zoho_agent_data").select("*").range(offset, offset + chunk_size - 1)
             if agent_name:
                 query = query.eq("ticket_owner", agent_name)
             response = query.execute()
@@ -228,10 +232,11 @@ def update_goal_status(supabase, agent_name):
             target = float(goal['target_value'])
             if metric in latest_perf.columns:
                 value = float(latest_perf[metric].iloc[0])
+                # Check if goal is achieved
                 if (metric == "aht" and value <= target) or (metric != "aht" and value >= target):
                     status = "Completed"
                     badge_name = f"{metric.replace('_', ' ').title()} Master"
-                    description = f"Achieved {metric} goal of {target:.1f}{' sec' if metric == 'aht' else '%'}"
+                    description = f"Achieved {metric.replace('_', ' ')} goal of {target:.1f}{' sec' if metric == 'aht' else '%'} with {value:.1f}{' sec' if metric == 'aht' else '%'}"
                     award_badge(supabase, agent_name, badge_name, description, "System")
                 else:
                     status = goal['status']
@@ -239,10 +244,11 @@ def update_goal_status(supabase, agent_name):
     except Exception:
         st.error("Error updating goal status.")
 
-# Get feedback
-def get_feedback(supabase, agent_name=None):
+# Get feedback with caching
+@st.cache_data(ttl=600)
+def get_feedback(_supabase, agent_name=None):
     try:
-        query = supabase.table("feedback").select("*")
+        query = _supabase.table("feedback").select("*")
         if agent_name:
             query = query.eq("agent_name", agent_name)
         response = query.execute()
@@ -277,16 +283,17 @@ def respond_to_feedback(supabase, feedback_id, manager_response, manager_name):
         st.error("Error responding to feedback.")
         return False
 
-# Get notifications
-def get_notifications(supabase):
+# Get notifications with caching
+@st.cache_data(ttl=300)
+def get_notifications(_supabase):
     if not st.session_state.get("notifications_enabled", False):
         return pd.DataFrame()
     try:
-        user_response = supabase.table("users").select("id").eq("name", st.session_state.user).execute()
+        user_response = _supabase.table("users").select("id").eq("name", st.session_state.user).execute()
         if not user_response.data:
             return pd.DataFrame()
         user_id = user_response.data[0]["id"]
-        response = supabase.table("notifications").select("*").eq("user_id", user_id).eq("read", False).execute()
+        response = _supabase.table("notifications").select("*").eq("user_id", user_id).eq("read", False).execute()
         return pd.DataFrame(response.data) if response.data else pd.DataFrame()
     except Exception:
         st.error("Error retrieving notifications.")
@@ -332,20 +339,21 @@ def award_badge(supabase, agent_name, badge_name, description, awarded_by):
         st.error("Error awarding badge.")
         return False
 
-# Get leaderboard
-def get_leaderboard(supabase):
+# Get leaderboard with caching
+@st.cache_data(ttl=3600)
+def get_leaderboard(_supabase):
     try:
-        response = supabase.table("performance").select("agent_name").execute()
+        response = _supabase.table("performance").select("agent_name").execute()
         if response.data:
             df_perf = pd.DataFrame(response.data)
-            all_perf_response = supabase.table("performance").select("*").execute()
+            all_perf_response = _supabase.table("performance").select("*").execute()
             if not all_perf_response.data:
                 return pd.DataFrame()
             df_all = pd.DataFrame(all_perf_response.data)
-            kpis = get_kpis(supabase)
+            kpis = get_kpis(_supabase)
             results = assess_performance(df_all, kpis)
             leaderboard_df = results.groupby("agent_name")["overall_score"].mean().reset_index()
-            badges_response = supabase.table("badges").select("agent_name, id").execute()
+            badges_response = _supabase.table("badges").select("agent_name, id").execute()
             badges_df = pd.DataFrame(badges_response.data) if badges_response.data else pd.DataFrame(columns=["agent_name", "id"])
             badge_counts = badges_df.groupby("agent_name")["id"].nunique().reset_index(name="badges_earned")
             leaderboard_df = leaderboard_df.merge(badge_counts, on="agent_name", how="left").fillna({"badges_earned": 0})
@@ -370,16 +378,17 @@ def create_forum_post(supabase, user_name, message, category):
         st.error("Error creating forum post.")
         return False
 
-# Get forum posts
-def get_forum_posts(supabase, category=None):
+# Get forum posts with caching
+@st.cache_data(ttl=600)
+def get_forum_posts(_supabase, category=None):
     try:
-        query = supabase.table("forum_posts").select("*")
+        query = _supabase.table("forum_posts").select("*")
         if category:
             query = query.eq("category", category)
         response = query.order("created_at", desc=True).execute()
         if response.data:
             df = pd.DataFrame(response.data)
-            badge_counts = supabase.table("badges").select("agent_name, count(id)").group("agent_name").execute()
+            badge_counts = _supabase.table("badges").select("agent_name, count(id)").group("agent_name").execute()
             badge_dict = {row['agent_name']: row['count'] for row in badge_counts.data} if badge_counts.data else {}
             df['badge_count'] = df['user_name'].map(badge_dict).fillna(0).astype(int)
             return df
@@ -389,13 +398,14 @@ def get_forum_posts(supabase, category=None):
         return pd.DataFrame()
 
 # Get AI coaching tips
-def get_coaching_tips(supabase, agent_name):
+@st.cache_data(ttl=3600)
+def get_coaching_tips(_supabase, agent_name):
     try:
-        perf = get_performance(supabase, agent_name)
+        perf = get_performance(_supabase, agent_name)
         if perf.empty:
             return []
         latest_perf = perf[perf['date'] == perf['date'].max()]
-        kpis = get_kpis(supabase)
+        kpis = get_kpis(_supabase)
         tips = []
         api_token = st.secrets.get("huggingface", {}).get("api_token", None)
         if not api_token:
@@ -411,12 +421,13 @@ def get_coaching_tips(supabase, agent_name):
                     response = requests.post(
                         "https://api-inference.huggingface.co/models/google/flan-t5-small",
                         headers=headers,
-                        json={"inputs": prompt, "parameters": {"max_length": 50}}
+                        json={"inputs": prompt, "parameters": {"max_length": 50}},
+                        timeout=10
                     )
                     if response.status_code == 200:
                         try:
                             data = response.json()
-                            tip = data[0]['generated_text'].strip() if isinstance(data, list) and data else "Focus on improving efficiency."
+                            tip = data[0]['generated_text'].strip() if isinstance(data, list) and data else f"Focus on improving {metric.replace('_', ' ')}."
                         except (ValueError, KeyError):
                             tip = f"Focus on improving {metric.replace('_', ' ')}."
                     else:
@@ -428,9 +439,10 @@ def get_coaching_tips(supabase, agent_name):
         return []
 
 # Ask the AI coach
-def ask_coach(supabase, agent_name, question):
+@st.cache_data(ttl=3600)
+def ask_coach(_supabase, agent_name, question):
     try:
-        perf = get_performance(supabase, agent_name)
+        perf = get_performance(_supabase, agent_name)
         context = ""
         if not perf.empty:
             latest_perf = perf[perf['date'] == perf['date'].max()]
@@ -448,7 +460,8 @@ def ask_coach(supabase, agent_name, question):
         response = requests.post(
             "https://api-inference.huggingface.co/models/google/flan-t5-small",
             headers=headers,
-            json={"inputs": prompt, "parameters": {"max_length": 100}}
+            json={"inputs": prompt, "parameters": {"max_length": 100}},
+            timeout=10
         )
         if response.status_code == 200:
             try:
@@ -464,9 +477,10 @@ def ask_coach(supabase, agent_name, question):
         return "Please consult your manager."
 
 # Plot interactive performance chart
-def plot_performance_chart(supabase, agent_name=None, metrics=None):
+@st.cache_data(ttl=600)
+def plot_performance_chart(_supabase, agent_name=None, metrics=None):
     try:
-        df = get_performance(supabase, agent_name)
+        df = get_performance(_supabase, agent_name)
         if df.empty:
             return None
         if metrics is None:
@@ -501,9 +515,10 @@ def assess_performance(performance_df, kpis):
     return results
 
 # Authenticate user
-def authenticate_user(supabase, name, password):
+@st.cache_data(ttl=3600)
+def authenticate_user(_supabase, name, password):
     try:
-        user_response = supabase.table("users").select("*").eq("name", name).execute()
+        user_response = _supabase.table("users").select("*").eq("name", name).execute()
         if user_response.data:
             return True, name, user_response.data[0]["role"]
         return False, None, None
@@ -519,6 +534,12 @@ def setup_realtime(supabase):
         if current_time - last_refresh >= timedelta(seconds=30):
             st.session_state.data_updated = True
             st.session_state.last_refresh = current_time
+            # Clear relevant caches
+            get_performance.clear()
+            get_feedback.clear()
+            get_notifications.clear()
+            get_forum_posts.clear()
+            plot_performance_chart.clear()
         st.sidebar.success("Auto-refresh enabled.")
 
 # Upload audio
@@ -539,10 +560,11 @@ def upload_audio(supabase, agent_name, audio_file, manager_name):
         st.error("Error uploading audio.")
         return False
 
-# Get audio assessments
-def get_audio_assessments(supabase, agent_name=None):
+# Get audio assessments with caching
+@st.cache_data(ttl=600)
+def get_audio_assessments(_supabase, agent_name=None):
     try:
-        query = supabase.table("audio_assessments").select("*")
+        query = _supabase.table("audio_assessments").select("*")
         if agent_name:
             query = query.eq("agent_name", agent_name)
         response = query.execute()
@@ -684,13 +706,14 @@ def main():
                     st.markdown(f"<div style='color: {'green' if 'Great job' in notif['message'] else 'red' if 'Attention' in notif['message'] else 'black'}'>{notif['message']}</div>", unsafe_allow_html=True)
                     if st.button("Mark as Read", key=f"notif_{notif['id']}"):
                         supabase.table("notifications").update({"read": True}).eq("id", notif["id"]).execute()
+                        get_notifications.clear()
                         st.rerun()
     else:
         with st.sidebar.expander("🔔 Notifications (0)"):
             st.write("Notifications disabled.")
 
     # Auto-refresh
-    st.session_state.auto_refresh = st.sidebar.checkbox("Enable Auto-Refresh", value=False)
+    st.session_state.auto_refresh = st.sidebar.checkbox("Enable Auto-Refresh", value=st.session_state.get("auto_refresh", False))
     setup_realtime(supabase)
     if st.session_state.get("auto_refresh", False) and st.session_state.get("data_updated", False):
         st.session_state.data_updated = False
@@ -750,6 +773,7 @@ def main():
                         'call_volume': call_volume
                     }
                     if save_kpis(supabase, new_kpis):
+                        get_kpis.clear()
                         st.success("KPIs saved!")
 
         with tabs[1]:  # Input Performance
@@ -779,11 +803,12 @@ def main():
                             'call_volume': call_volume
                         }
                         if save_performance(supabase, agent, data):
+                            get_performance.clear()
                             st.success(f"Performance saved for {agent}!")
             
             st.subheader("Upload Performance Data")
             uploaded_file = st.file_uploader("Upload CSV", type="csv")
-            if uploaded_file:
+            if uploaded_file and st.button("Import CSV"):
                 df = pd.read_csv(uploaded_file)
                 required_cols = ['agent_name', 'attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
                                 'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat', 'call_volume']
@@ -793,6 +818,7 @@ def main():
                         if 'date' in row:
                             data['date'] = row['date']
                         save_performance(supabase, row['agent_name'], data)
+                    get_performance.clear()
                     st.success(f"Imported data for {len(df)} agents!")
                 else:
                     st.error("CSV missing required columns.")
@@ -930,6 +956,7 @@ def main():
                         submit = st.form_submit_button("Send")
                     if submit and feedback_id and manager_response.strip():
                         if respond_to_feedback(supabase, feedback_id, manager_response, st.session_state.user):
+                            get_feedback.clear()
                             st.success("Response sent!")
                             if 'reply_to_feedback_id' in st.session_state:
                                 del st.session_state.reply_to_feedback_id
@@ -952,6 +979,7 @@ def main():
                     if st.form_submit_button("Upload Audio"):
                         if audio_file:
                             if upload_audio(supabase, selected_agent, audio_file, st.session_state.user):
+                                get_audio_assessments.clear()
                                 st.success(f"Audio uploaded for {selected_agent}!")
                             else:
                                 st.error("Failed to upload audio.")
@@ -969,6 +997,7 @@ def main():
                         notes = st.text_area("Assessment Notes", value=row['assessment_notes'], key=f"notes_{row['id']}")
                         if st.button("Save Notes", key=f"save_notes_{row['id']}"):
                             if update_assessment_notes(supabase, row['id'], notes):
+                                get_audio_assessments.clear()
                                 st.success("Notes saved!")
                                 st.rerun()
                             else:
@@ -991,6 +1020,7 @@ def main():
                 description = st.text_area("Description")
                 if st.form_submit_button("Award Badge"):
                     if award_badge(supabase, agent, badge_name, description, st.session_state.user):
+                        get_leaderboard.clear()
                         st.success(f"Badge awarded to {agent}!")
 
         if st.session_state.get("notifications_enabled", False):
@@ -1001,6 +1031,7 @@ def main():
                     message = st.text_area("Post a Message")
                     if st.form_submit_button("Post"):
                         if create_forum_post(supabase, st.session_state.user, message, category):
+                            get_forum_posts.clear()
                             st.success("Post submitted!")
                             st.rerun()
                 posts_df = get_forum_posts(supabase, category)
@@ -1130,6 +1161,7 @@ def main():
                                 "user_id": manager["id"],
                                 "message": f"New feedback from {st.session_state.user}: {feedback_text[:50]}..."
                             }).execute()
+                    get_feedback.clear()
                     st.success("Feedback submitted!")
             
             st.subheader("Feedback History")
@@ -1185,11 +1217,17 @@ def main():
         with tabs[4]:  # Achievements
             st.header("🏆 My Achievements")
             badges_df = supabase.table("badges").select("*").eq("agent_name", st.session_state.user).execute()
-            if badges_df.data:
-                for badge in badges_df.data:
-                    st.markdown(f"🎖️ **{badge['badge_name']}**: {badge['description']} (Earned on {badge['earned_at'][:10]})")
+            completed_goals = supabase.table("goals").select("*").eq("agent_name", st.session_state.user).eq("status", "Completed").execute()
+            if badges_df.data or completed_goals.data:
+                if badges_df.data:
+                    for badge in badges_df.data:
+                        st.markdown(f"🎖️ **{badge['badge_name']}**: {badge['description']} (Earned on {badge['earned_at'][:10]})")
+                if completed_goals.data:
+                    st.subheader("Completed Goals")
+                    for goal in completed_goals.data:
+                        st.markdown(f"🎯 **{goal['metric'].replace('_', ' ').title()} Goal Achieved**: Target {goal['target_value']:.1f}{' sec' if goal['metric'] == 'aht' else '%'} (Completed on {goal['approved_at'][:10] if goal['approved_at'] else goal['created_at'][:10]})")
             else:
-                st.info("No badges earned yet. Keep up the great work!")
+                st.info("No badges or completed goals yet. Keep up the great work!")
 
         with tabs[5]:  # Daily Report
             st.header("📋 Call Centre Daily Report")
@@ -1200,7 +1238,6 @@ def main():
             with st.spinner('Loading the reporting form...'):
                 time.sleep(2)  # Simulate loading time
             # Pre-fill the "Your Name" field with the logged-in agent's name
-            # Replace 'entry.1234567890' with the actual field ID for "Your Name" from your Google Form
             base_form_url = "https://docs.google.com/forms/d/e/1FAIpQLSfWt6PzEoYv2lSL8H6WGZaL0IsDmq3I79aMWt5VOseL6CN7_Q/viewform"
             encoded_name = urllib.parse.quote(st.session_state.user)
             form_url = f"{base_form_url}?entry.1234567890={encoded_name}"
@@ -1224,6 +1261,7 @@ def main():
                     if question.strip():
                         answer = ask_coach(supabase, st.session_state.user, question)
                         st.markdown(f"**Coach Response**: {answer}")
+                        st.session_state.last_coach_answer = answer  # Store for persistence
                     else:
                         st.error("Please enter a question.")
 
@@ -1235,6 +1273,7 @@ def main():
                     message = st.text_area("Post a Message", key="agent_forum_message")
                     if st.form_submit_button("Post"):
                         if create_forum_post(supabase, st.session_state.user, message, category):
+                            get_forum_posts.clear()
                             st.success("Post submitted!")
                             st.rerun()
                 posts_df = get_forum_posts(supabase, category)
