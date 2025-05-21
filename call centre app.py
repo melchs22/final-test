@@ -8,6 +8,12 @@ import requests
 import time
 import uuid
 import urllib.parse
+from tenacity import retry, stop_after_attempt, wait_fixed
+
+# SECURITY WARNING: Passwords are stored in plain text in the 'users' table, which is highly insecure.
+# This exposes passwords to attackers if the database is compromised.
+# Recommendation: Hash passwords using bcrypt or another secure algorithm (e.g., Argon2, PBKDF2).
+# Contact the developer to implement password hashing with a migration script for existing passwords.
 
 # Initialize Supabase with caching
 @st.cache_resource
@@ -19,7 +25,7 @@ def init_supabase():
     return create_client(url, key)
 
 # Check database tables
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+@st.cache_data(ttl=3600)
 def check_db(_supabase):
     required_tables = ["users", "kpis", "performance", "zoho_agent_data", "goals", "feedback", "notifications", "audio_assessments", "badges", "forum_posts"]
     critical_tables = ["users", "goals", "feedback", "performance"]
@@ -59,8 +65,8 @@ def save_kpis(supabase, kpis):
             else:
                 supabase.table("kpis").update({"threshold": threshold}).eq("metric", metric).execute()
         return True
-    except Exception:
-        st.error("Error saving KPIs.")
+    except Exception as e:
+        st.error(f"Error saving KPIs: {str(e)}")
         return False
 
 # Get KPIs with caching
@@ -74,8 +80,8 @@ def get_kpis(_supabase):
             value = row["threshold"]
             kpis[metric] = int(float(value)) if metric == "call_volume" else float(value) if value is not None else 0.0
         return kpis
-    except Exception:
-        st.error("Error retrieving KPIs.")
+    except Exception as e:
+        st.error(f"Error retrieving KPIs: {str(e)}")
         return {}
 
 # Save performance data
@@ -112,12 +118,12 @@ def save_performance(supabase, agent_name, data):
                     send_performance_alert(supabase, agent_name, metric, value, threshold, is_positive=False)
         update_goal_status(supabase, agent_name)
         return True
-    except Exception:
-        st.error("Error saving performance data.")
+    except Exception as e:
+        st.error(f"Error saving performance data: {str(e)}")
         return False
 
 # Get performance data with caching
-@st.cache_data(ttl=600)  # Cache for 10 minutes
+@st.cache_data(ttl=600)
 def get_performance(_supabase, agent_name=None):
     try:
         query = _supabase.table("performance").select("*")
@@ -135,8 +141,8 @@ def get_performance(_supabase, agent_name=None):
                 df['call_volume'] = pd.to_numeric(df['call_volume'], errors='coerce').fillna(0).astype(int)
             return df
         return pd.DataFrame()
-    except Exception:
-        st.error("Error retrieving performance data.")
+    except Exception as e:
+        st.error(f"Error retrieving performance data: {str(e)}")
         return pd.DataFrame()
 
 # Get Zoho agent data with caching
@@ -165,8 +171,8 @@ def get_zoho_agent_data(_supabase, agent_name=None):
             return df
         st.warning("No Zoho data found.")
         return pd.DataFrame()
-    except Exception:
-        st.error("Error retrieving Zoho data.")
+    except Exception as e:
+        st.error(f"Error retrieving Zoho data: {str(e)}")
         return pd.DataFrame()
 
 # Set agent goal
@@ -176,7 +182,8 @@ def set_agent_goal(supabase, agent_name, metric, target_value, manager_name, is_
             "agent_name": agent_name,
             "metric": metric,
             "target_value": target_value,
-            "status": "Approved" if is_manager else "Awaiting Approval"
+            "status": "Approved" if is_manager else "Awaiting Approval",
+            "created_at": datetime.now().isoformat()
         }
         response = supabase.table("goals").select("*").eq("agent_name", agent_name).eq("metric", metric).execute()
         if response.data:
@@ -184,8 +191,8 @@ def set_agent_goal(supabase, agent_name, metric, target_value, manager_name, is_
         else:
             supabase.table("goals").insert(goal_data).execute()
         return True
-    except Exception:
-        st.error("Error setting goal.")
+    except Exception as e:
+        st.error(f"Error setting goal: {str(e)}")
         return False
 
 # Approve or reject goal
@@ -208,8 +215,8 @@ def approve_goal(supabase, goal_id, manager_name, approve=True):
                         "message": f"Your goal for {agent_name} was {status} by {manager_name}"
                     }).execute()
         return True
-    except Exception:
-        st.error("Error approving/rejecting goal.")
+    except Exception as e:
+        st.error(f"Error approving/rejecting goal: {str(e)}")
         return False
 
 # Update goal status
@@ -232,7 +239,6 @@ def update_goal_status(supabase, agent_name):
             target = float(goal['target_value'])
             if metric in latest_perf.columns:
                 value = float(latest_perf[metric].iloc[0])
-                # Check if goal is achieved
                 if (metric == "aht" and value <= target) or (metric != "aht" and value >= target):
                     status = "Completed"
                     badge_name = f"{metric.replace('_', ' ').title()} Master"
@@ -241,8 +247,8 @@ def update_goal_status(supabase, agent_name):
                 else:
                     status = goal['status']
                 supabase.table("goals").update({"status": status}).eq("id", goal['id']).execute()
-    except Exception:
-        st.error("Error updating goal status.")
+    except Exception as e:
+        st.error(f"Error updating goal status: {str(e)}")
 
 # Get feedback with caching
 @st.cache_data(ttl=600)
@@ -256,8 +262,8 @@ def get_feedback(_supabase, agent_name=None):
             return pd.DataFrame(response.data)
         st.warning("No feedback found.")
         return pd.DataFrame()
-    except Exception:
-        st.error("Error retrieving feedback.")
+    except Exception as e:
+        st.error(f"Error retrieving feedback: {str(e)}")
         return pd.DataFrame()
 
 # Respond to feedback
@@ -279,8 +285,8 @@ def respond_to_feedback(supabase, feedback_id, manager_response, manager_name):
                         "message": f"Manager responded to your feedback: {manager_response[:50]}..."
                     }).execute()
         return True
-    except Exception:
-        st.error("Error responding to feedback.")
+    except Exception as e:
+        st.error(f"Error responding to feedback: {str(e)}")
         return False
 
 # Get notifications with caching
@@ -295,8 +301,8 @@ def get_notifications(_supabase):
         user_id = user_response.data[0]["id"]
         response = _supabase.table("notifications").select("*").eq("user_id", user_id).eq("read", False).execute()
         return pd.DataFrame(response.data) if response.data else pd.DataFrame()
-    except Exception:
-        st.error("Error retrieving notifications.")
+    except Exception as e:
+        st.error(f"Error retrieving notifications: {str(e)}")
         return pd.DataFrame()
 
 # Send performance alert
@@ -310,8 +316,8 @@ def send_performance_alert(supabase, agent_name, metric, value, threshold, is_po
                 "message": message
             }).execute()
         return True
-    except Exception:
-        st.error("Error sending alert.")
+    except Exception as e:
+        st.error(f"Error sending alert: {str(e)}")
         return False
 
 # Award badge
@@ -335,8 +341,8 @@ def award_badge(supabase, agent_name, badge_name, description, awarded_by):
                     "message": f"You earned the '{badge_name}' badge: {description}"
                 }).execute()
         return True
-    except Exception:
-        st.error("Error awarding badge.")
+    except Exception as e:
+        st.error(f"Error awarding badge: {str(e)}")
         return False
 
 # Get leaderboard with caching
@@ -360,8 +366,8 @@ def get_leaderboard(_supabase):
             leaderboard_df["badges_earned"] = leaderboard_df["badges_earned"].astype(int)
             leaderboard_df = leaderboard_df.sort_values("overall_score", ascending=False)
             return leaderboard_df
-    except Exception:
-        st.error("Unable to retrieve leaderboard.")
+    except Exception as e:
+        st.error(f"Unable to retrieve leaderboard: {str(e)}")
         return pd.DataFrame()
 
 # Create forum post
@@ -374,8 +380,8 @@ def create_forum_post(supabase, user_name, message, category):
             "created_at": datetime.now().isoformat()
         }).execute()
         return True
-    except Exception:
-        st.error("Error creating forum post.")
+    except Exception as e:
+        st.error(f"Error creating forum post: {str(e)}")
         return False
 
 # Get forum posts with caching
@@ -399,6 +405,7 @@ def get_forum_posts(_supabase, category=None):
 
 # Get AI coaching tips
 @st.cache_data(ttl=3600)
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 def get_coaching_tips(_supabase, agent_name):
     try:
         perf = get_performance(_supabase, agent_name)
@@ -410,7 +417,7 @@ def get_coaching_tips(_supabase, agent_name):
         api_token = st.secrets.get("huggingface", {}).get("api_token", None)
         if not api_token:
             st.warning("Hugging Face API token not found.")
-            return []
+            return [{"metric": "general", "tip": "Focus on improving overall performance."}]
         for metric in ['attendance', 'quality_score', 'csat', 'aht']:
             if metric in latest_perf.columns:
                 value = float(latest_perf[metric].iloc[0])
@@ -422,24 +429,20 @@ def get_coaching_tips(_supabase, agent_name):
                         "https://api-inference.huggingface.co/models/google/flan-t5-small",
                         headers=headers,
                         json={"inputs": prompt, "parameters": {"max_length": 50}},
-                        timeout=10
+                        timeout=15
                     )
-                    if response.status_code == 200:
-                        try:
-                            data = response.json()
-                            tip = data[0]['generated_text'].strip() if isinstance(data, list) and data else f"Focus on improving {metric.replace('_', ' ')}."
-                        except (ValueError, KeyError):
-                            tip = f"Focus on improving {metric.replace('_', ' ')}."
-                    else:
-                        tip = f"Focus on improving {metric.replace('_', ' ')}."
+                    response.raise_for_status()
+                    data = response.json()
+                    tip = data[0]['generated_text'].strip() if isinstance(data, list) and data else f"Focus on improving {metric.replace('_', ' ')}."
                     tips.append({"metric": metric, "tip": tip})
-        return tips
-    except Exception:
-        st.error("Error generating coaching tips.")
-        return []
+        return tips if tips else [{"metric": "general", "tip": "You're doing well! Keep it up."}]
+    except Exception as e:
+        st.error(f"Error generating coaching tips: {str(e)}")
+        return [{"metric": "general", "tip": "Please consult your manager for coaching tips."}]
 
 # Ask the AI coach
 @st.cache_data(ttl=3600)
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 def ask_coach(_supabase, agent_name, question):
     try:
         perf = get_performance(_supabase, agent_name)
@@ -461,20 +464,15 @@ def ask_coach(_supabase, agent_name, question):
             "https://api-inference.huggingface.co/models/google/flan-t5-small",
             headers=headers,
             json={"inputs": prompt, "parameters": {"max_length": 100}},
-            timeout=10
+            timeout=15
         )
-        if response.status_code == 200:
-            try:
-                data = response.json()
-                answer = data[0]['generated_text'].strip() if isinstance(data, list) and data else "Please consult your manager."
-            except (ValueError, KeyError):
-                answer = "Please consult your manager."
-        else:
-            answer = "Please consult your manager."
+        response.raise_for_status()
+        data = response.json()
+        answer = data[0]['generated_text'].strip() if isinstance(data, list) and data else "Please consult your manager."
         return answer
-    except Exception:
-        st.error("Error generating coach response.")
-        return "Please consult your manager."
+    except Exception as e:
+        st.error(f"Error generating coach response: {str(e)}")
+        return "Please consult your manager for assistance."
 
 # Plot interactive performance chart
 @st.cache_data(ttl=600)
@@ -495,8 +493,8 @@ def plot_performance_chart(_supabase, agent_name=None, metrics=None):
             fig = px.bar(avg_df, x='agent_name', y=metrics, barmode='group', title="Team Performance Comparison")
             fig.update_layout(yaxis_title="Value (%)", xaxis_title="Agent")
         return fig
-    except Exception:
-        st.error("Error plotting chart.")
+    except Exception as e:
+        st.error(f"Error plotting chart: {str(e)}")
         return None
 
 # Assess performance
@@ -514,17 +512,38 @@ def assess_performance(performance_df, kpis):
         results['overall_score'] = results[pass_columns].mean(axis=1) * 100
     return results
 
-# Authenticate user
+# Authenticate user (plain text passwords)
 @st.cache_data(ttl=3600)
 def authenticate_user(_supabase, name, password):
     try:
         user_response = _supabase.table("users").select("*").eq("name", name).execute()
         if user_response.data:
-            return True, name, user_response.data[0]["role"]
+            stored_password = user_response.data[0]["password"]
+            if password == stored_password:
+                return True, name, user_response.data[0]["role"]
         return False, None, None
-    except Exception:
-        st.error("Authentication error.")
+    except Exception as e:
+        st.error(f"Authentication error: {str(e)}")
         return False, None, None
+
+# Change password (plain text)
+def change_password(supabase, username, current_password, new_password, confirm_password):
+    try:
+        # Validate inputs
+        if new_password != confirm_password:
+            return False, "New password and confirmation do not match."
+        if len(new_password) < 8:
+            return False, "New password must be at least 8 characters long."
+        user_response = supabase.table("users").select("*").eq("name", username).execute()
+        if not user_response.data:
+            return False, "User not found."
+        stored_password = user_response.data[0]["password"]
+        if current_password != stored_password:
+            return False, "Current password is incorrect."
+        supabase.table("users").update({"password": new_password}).eq("name", username).execute()
+        return True, "Password changed successfully!"
+    except Exception as e:
+        return False, f"Error changing password: {str(e)}"
 
 # Setup real-time polling
 def setup_realtime(supabase):
@@ -534,7 +553,6 @@ def setup_realtime(supabase):
         if current_time - last_refresh >= timedelta(seconds=30):
             st.session_state.data_updated = True
             st.session_state.last_refresh = current_time
-            # Clear relevant caches
             get_performance.clear()
             get_feedback.clear()
             get_notifications.clear()
@@ -556,8 +574,8 @@ def upload_audio(supabase, agent_name, audio_file, manager_name):
             "uploaded_by": manager_name
         }).execute()
         return True
-    except Exception:
-        st.error("Error uploading audio.")
+    except Exception as e:
+        st.error(f"Error uploading audio: {str(e)}")
         return False
 
 # Get audio assessments with caching
@@ -572,8 +590,8 @@ def get_audio_assessments(_supabase, agent_name=None):
             return pd.DataFrame(response.data)
         st.warning("No audio assessments found.")
         return pd.DataFrame()
-    except Exception:
-        st.error("Error retrieving audio assessments.")
+    except Exception as e:
+        st.error(f"Error retrieving audio assessments: {str(e)}")
         return pd.DataFrame()
 
 # Update assessment notes
@@ -581,8 +599,8 @@ def update_assessment_notes(supabase, audio_id, notes):
     try:
         supabase.table("audio_assessments").update({"assessment_notes": notes}).eq("id", audio_id).execute()
         return True
-    except Exception:
-        st.error("Error updating assessment notes.")
+    except Exception as e:
+        st.error(f"Error updating assessment notes: {str(e)}")
         return False
 
 # Main application
@@ -594,7 +612,7 @@ def main():
         st.session_state.theme = "light"
     theme_css = {
         "light": """
-            .reportview-container { background: linear-gradient(to right, #f0f4f8, #e0e7ff); }
+            .reportview-container { background: linear-gradient(to right, #f0f4f8, #e0e7ff); --card-bg: #ffffff; --text-color: #2c3e50; --metric-color: #4CAF50; --button-bg: #4CAF50; --button-hover: #388E3C; }
             .sidebar .sidebar-content { background-color: #ffffff; border-right: 2px solid #4CAF50; }
             .stButton>button { background-color: #4CAF50; color: white; border-radius: 8px; padding: 8px 16px; }
             .stButton>button:hover { background-color: #388E3C; }
@@ -609,7 +627,7 @@ def main():
             iframe { border: 2px solid #1f77b4; border-radius: 10px; background: white; }
         """,
         "dark": """
-            .reportview-container { background: linear-gradient(to right, #2c3e50, #34495e); color: white; }
+            .reportview-container { background: linear-gradient(to right, #2c3e50, #34495e); color: white; --card-bg: #34495e; --text-color: #ecf0f1; --metric-color: #3498db; --button-bg: #3498db; --button-hover: #2980b9; }
             .sidebar .sidebar-content { background-color: #34495e; border-right: 2px solid #3498db; }
             .stButton>button { background-color: #3498db; color: white; }
             .stButton>button:hover { background-color: #2980b9; }
@@ -624,7 +642,7 @@ def main():
             iframe { border: 2px solid #3498db; border-radius: 10px; background: white; }
         """,
         "blue": """
-            .reportview-container { background: linear-gradient(to right, #3498db, #2980b9); color: white; }
+            .reportview-container { background: linear-gradient(to right, #3498db, #2980b9); color: white; --card-bg: #2980b9; --text-color: #ecf0f1; --metric-color: #2ecc71; --button-bg: #2ecc71; --button-hover: #27ae60; }
             .sidebar .sidebar-content { background-color: #2980b9; border-right: 2px solid #3498db; }
             .stButton>button { background-color: #2ecc71; color: white; }
             .stButton>button:hover { background-color: #27ae60; }
@@ -639,7 +657,252 @@ def main():
             iframe { border: 2px solid #2ecc71; border-radius: 10px; background: white; }
         """
     }
-    st.markdown(f"<style>{theme_css[st.session_state.theme]}</style>", unsafe_allow_html=True)
+    
+    # Custom CSS for UI components
+    custom_css = """
+        /* From Uiverse.io by Na3ar-17 */
+        .container {
+            padding: 0;
+            margin: 0;
+            box-sizing: border-box;
+            font-family: Arial, Helvetica, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .label {
+            background-color: transparent;
+            border: 2px solid rgb(91, 91, 240);
+            display: flex;
+            align-items: center;
+            border-radius: 50px;
+            width: 160px;
+            cursor: pointer;
+            transition: all 0.4s ease;
+            padding: 5px;
+            position: relative;
+        }
+        .label::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background-color: #fff;
+            width: 8px;
+            height: 8px;
+            transition: all 0.4s ease;
+            border-radius: 100%;
+            margin: auto;
+            opacity: 0;
+            visibility: hidden;
+        }
+        .label .input {
+            display: none;
+        }
+        .label .title {
+            font-size: 17px;
+            color: #fff;
+            transition: all 0.4s ease;
+            position: absolute;
+            right: 18px;
+            bottom: 14px;
+            text-align: center;
+        }
+        .label .title:last-child {
+            opacity: 0;
+            visibility: hidden;
+        }
+        .label .circle {
+            height: 45px;
+            width: 45px;
+            border-radius: 50%;
+            background-color: rgb(91, 91, 240);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: all 0.4s ease;
+            position: relative;
+            box-shadow: 0 0 0 0 rgb(255, 255, 255);
+            overflow: hidden;
+        }
+        .label .circle .icon {
+            color: #fff;
+            width: 30px;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            transition: all 0.4s ease;
+        }
+        .label .circle .square {
+            aspect-ratio: 1;
+            width: 15px;
+            border-radius: 2px;
+            background-color: #fff;
+            opacity: 0;
+            visibility: hidden;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            transition: all 0.4s ease;
+        }
+        .label .circle::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0;
+            background-color: #3333a8;
+            width: 100%;
+            height: 0;
+            transition: all 0.4s ease;
+        }
+        .label:has(.input:checked) {
+            width: 57px;
+            animation: installed 0.4s ease 3.5s forwards;
+        }
+        .label:has(.input:checked)::before {
+            animation: rotate 3s ease-in-out 0.4s forwards;
+        }
+        .label .input:checked + .circle {
+            animation:
+                pulse 1s forwards,
+                circleDelete 0.2s ease 3.5s forwards;
+            rotate: 180deg;
+        }
+        .label .input:checked + .circle::before {
+            animation: installing 3s ease-in-out forwards;
+        }
+        .label .input:checked + .circle .icon {
+            opacity: 0;
+            visibility: hidden;
+        }
+        .label .input:checked ~ .circle .square {
+            opacity: 1;
+            visibility: visible;
+        }
+        .label .input:checked ~ .title {
+            opacity: 0;
+            visibility: hidden;
+        }
+        .label .input:checked ~ .title:last-child {
+            animation: showInstalledMessage 0.4s ease 3.5s forwards;
+        }
+        @keyframes pulse {
+            0% { scale: 0.95; box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7); }
+            70% { scale: 1; box-shadow: 0 0 0 16px rgba(255, 255, 255, 0); }
+            100% { scale: 0.95; box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+        }
+        @keyframes installing {
+            from { height: 0; }
+            to { height: 100%; }
+        }
+        @keyframes rotate {
+            0% { transform: rotate(-90deg) translate(27px) rotate(0); opacity: 1; visibility: visible; }
+            99% { transform: rotate(270deg) translate(27px) rotate(270deg); opacity: 1; visibility: visible; }
+            100% { opacity: 0; visibility: hidden; }
+        }
+        @keyframes installed {
+            100% { width: 150px; border-color: rgb(35, 174, 35); }
+        }
+        @keyframes circleDelete {
+            100% { opacity: 0; visibility: hidden; }
+        }
+        @keyframes showInstalledMessage {
+            100% { opacity: 1; visibility: visible; right: 56px; }
+        }
+        /* From Uiverse.io by JkHuger */
+        .login {
+            color: #000;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            display: block;
+            font-weight: bold;
+            font-size: x-large;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .card {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 350px;
+            width: 300px;
+            flex-direction: column;
+            gap: 35px;
+            background: #e3e3e3;
+            box-shadow: 16px 16px 32px #c8c8c8, -16px -16px 32px #fefefe;
+            border-radius: 8px;
+            margin: 50px auto;
+        }
+        .inputBox {
+            position: relative;
+            width: 250px;
+        }
+        .inputBox input {
+            width: 100%;
+            padding: 10px;
+            outline: none;
+            border: none;
+            color: #000;
+            font-size: 1em;
+            background: transparent;
+            border-left: 2px solid #000;
+            border-bottom: 2px solid #000;
+            transition: 0.1s;
+            border-bottom-left-radius: 8px;
+        }
+        .inputBox span {
+            margin-top: 5px;
+            position: absolute;
+            left: 0;
+            transform: translateY(-4px);
+            margin-left: 10px;
+            padding: 10px;
+            pointer-events: none;
+            font-size: 12px;
+            color: #000;
+            text-transform: uppercase;
+            transition: 0.5s;
+            letter-spacing: 3px;
+            border-radius: 8px;
+        }
+        .inputBox input:valid~span,
+        .inputBox input:focus~span {
+            transform: translateX(113px) translateY(-15px);
+            font-size: 0.8em;
+            padding: 5px 10px;
+            background: #000;
+            letter-spacing: 0.2em;
+            color: #fff;
+            border: 2px;
+        }
+        .inputBox input:valid,
+        .inputBox input:focus {
+            border: 2px solid #000;
+            border-radius: 8px;
+        }
+        .enter {
+            height: 45px;
+            width: 100px;
+            border-radius: 5px;
+            border: 2px solid #000;
+            cursor: pointer;
+            background-color: transparent;
+            transition: 0.5s;
+            text-transform: uppercase;
+            font-size: 10px;
+            letter-spacing: 2px;
+            margin-bottom: 1em;
+        }
+        .enter:hover {
+            background-color: rgb(0, 0, 0);
+            color: white;
+        }
+    """
+    st.markdown(f"<style>{theme_css[st.session_state.theme]}{custom_css}</style>", unsafe_allow_html=True)
 
     # Initialize Supabase
     try:
@@ -647,11 +910,9 @@ def main():
         if not check_db(supabase):
             st.error("Critical database tables are missing.")
             st.stop()
-        global auth
-        auth = supabase.auth
         st.session_state.supabase = supabase
-    except Exception:
-        st.error("Failed to connect to Supabase.")
+    except Exception as e:
+        st.error(f"Failed to connect to Supabase: {str(e)}")
         st.stop()
 
     # Initialize session state
@@ -664,21 +925,26 @@ def main():
         st.session_state.last_refresh = datetime.now()
         st.session_state.cleared_chats = set()
         st.session_state.theme = "light"
+        st.session_state.theme_index = 0
 
-    # Theme selector
-    with st.sidebar:
-        theme = st.selectbox("Theme", ["Light", "Dark", "Blue"], key="theme_selector")
-        if theme.lower() != st.session_state.theme:
-            st.session_state.theme = theme.lower()
-            st.rerun()
+    # Theme toggle
+    themes = ["light", "dark", "blue"]
+    def toggle_theme():
+        st.session_state.theme_index = (st.session_state.theme_index + 1) % len(themes)
+        st.session_state.theme = themes[st.session_state.theme_index]
+        st.rerun()
 
     # Login
     if not st.session_state.user:
-        st.title("🔐 Login")
+        st.markdown('<h1 class="login">🔐 Login</h1>', unsafe_allow_html=True)
+        st.markdown('<div class="card">', unsafe_allow_html=True)
         with st.form("login_form"):
-            name = st.text_input("Name")
-            password = st.text_input("Password", type="password")
-            if st.form_submit_button("Login"):
+            st.markdown('<div class="inputBox"><input type="text" required="required" id="name"><span>Name</span></div>', unsafe_allow_html=True)
+            name = st.text_input("", key="login_name", label_visibility="collapsed")
+            st.markdown('<div class="inputBox"><input type="password" required="required" id="password"><span>Password</span></div>', unsafe_allow_html=True)
+            password = st.text_input("", type="password", key="login_password", label_visibility="collapsed")
+            st.markdown('<button class="enter" type="submit">Enter</button>', unsafe_allow_html=True)
+            if st.form_submit_button("Login", use_container_width=True):
                 success, user, role = authenticate_user(supabase, name, password)
                 if success:
                     st.session_state.user = user
@@ -687,13 +953,34 @@ def main():
                     st.rerun()
                 else:
                     st.error("Invalid credentials.")
+        st.markdown('</div>', unsafe_allow_html=True)
         return
 
-    # Logout
-    if st.sidebar.button("Logout"):
-        st.session_state.user = None
-        st.session_state.role = None
-        st.rerun()
+    # Sidebar
+    with st.sidebar:
+        st.markdown('<div class="container">', unsafe_allow_html=True)
+        st.markdown(f'''
+            <label class="label">
+                <input class="input" type="checkbox" {'checked' if st.session_state.theme != 'light' else ''} onclick="window.location.reload()">
+                <span class="circle">
+                    <img class="icon" src="https://cdn-icons-png.flaticon.com/512/1160/1160119.png"/>
+                    <span class="square"></span>
+                </span>
+                <span class="title">{st.session_state.theme.title()}</span>
+                <span class="title">Change Theme</span>
+            </label>
+        ''', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        if st.button("Toggle Theme", key="theme_toggle"):
+            toggle_theme()
+        st.info(f"👤 Logged in as: {st.session_state.user}")
+        st.info(f"🎓 Role: {st.session_state.role}")
+        if st.button("Logout"):
+            st.session_state.user = None
+            st.session_state.role = None
+            st.rerun()
+        st.session_state.auto_refresh = st.checkbox("Enable Auto-Refresh", value=st.session_state.get("auto_refresh", False))
+        setup_realtime(supabase)
 
     # Notifications
     if st.session_state.get("notifications_enabled", False):
@@ -711,16 +998,6 @@ def main():
     else:
         with st.sidebar.expander("🔔 Notifications (0)"):
             st.write("Notifications disabled.")
-
-    # Auto-refresh
-    st.session_state.auto_refresh = st.sidebar.checkbox("Enable Auto-Refresh", value=st.session_state.get("auto_refresh", False))
-    setup_realtime(supabase)
-    if st.session_state.get("auto_refresh", False) and st.session_state.get("data_updated", False):
-        st.session_state.data_updated = False
-        st.rerun()
-
-    st.sidebar.info(f"👤 Logged in as: {st.session_state.user}")
-    st.sidebar.info(f"🎓 Role: {st.session_state.role}")
 
     # Display company logo
     try:
@@ -1051,7 +1328,7 @@ def main():
             except:
                 st.error("Error loading profile image.")
         
-        tabs_list = ["📋 Metrics", "🎯 Goals", "💬 Feedback", "📊 Tickets", "🏆 Achievements", "📋 Daily Report", "🤖 Ask the Coach"]
+        tabs_list = ["📋 Metrics", "🎯 Goals", "💬 Feedback", "📊 Tickets", "🏆 Achievements", "📋 Daily Report", "🤖 Ask the Coach", "🔒 Change Password"]
         if st.session_state.get("notifications_enabled", False):
             tabs_list.append("🌐 Community Forum")
         tabs = st.tabs(tabs_list)
@@ -1104,9 +1381,7 @@ def main():
                     for tip in tips:
                         st.markdown(f"**{tip['metric'].replace('_', ' ').title()}**: {tip['tip']}")
                 else:
-                    st.info("You're performing well! No coaching tips needed.")
-            else:
-                st.info("No performance data available.")
+                    st.info("You're performing well! Keep it up.")
 
         with tabs[1]:  # Goals
             st.header("🎯 Your Goals")
