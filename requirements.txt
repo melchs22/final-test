@@ -8,3 +8,4 @@ bcrypt
 pyjwt
 transformers
 requests
+reportlab
