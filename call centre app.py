@@ -318,18 +318,36 @@ def respond_to_feedback(supabase, feedback_id, manager_response, manager_name):
 
 # Get notifications with caching
 @st.cache_data(ttl=300)
-def get_notifications(_supabase):
-    if not st.session_state.get("notifications_enabled", False):
-        return pd.DataFrame()
+def get_performance(_supabase, agent_name=None):
     try:
-        user_response = _supabase.table("users").select("id").eq("name", st.session_state.user).execute()
-        if not user_response.data:
-            return pd.DataFrame()
-        user_id = user_response.data[0]["id"]
-        response = _supabase.table("notifications").select("*").eq("user_id", user_id).eq("read", False).execute()
-        return pd.DataFrame(response.data) if response.data else pd.DataFrame()
-    except Exception:
-        st.error("Error retrieving notifications.")
+        query = _supabase.table("performance").select("*")
+        if agent_name:
+            query = query.eq("agent_name", agent_name)
+        response = query.execute()
+        if response.data:
+            df = pd.DataFrame(response.data)
+            # Ensure expected columns exist
+            expected_cols = [
+                'agent_name', 'attendance', 'quality_score', 'product_knowledge',
+                'contact_success_rate', 'onboarding', 'reporting', 'talk_time',
+                'resolution_rate', 'aht', 'csat', 'call_volume', 'date'
+            ]
+            missing_cols = [col for col in expected_cols if col not in df.columns]
+            if missing_cols:
+                st.error(f"Missing columns in performance data: {missing_cols}")
+                return pd.DataFrame()
+            # Convert date column to datetime
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'], errors='coerce', utc=True)
+                if df['date'].isna().any():
+                    st.warning(f"Invalid 'date' values found in performance data for {agent_name or 'all agents'}.")
+                    df = df[df['date'].notna()].copy()
+            st.write(f"DEBUG: get_performance for {agent_name or 'all agents'}, shape: {df.shape}, date dtype: {df['date'].dtype}")
+            return df
+        st.warning(f"No performance data found for {agent_name or 'all agents'}.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error retrieving performance data: {str(e)}")
         return pd.DataFrame()
 
 # Send performance alert
