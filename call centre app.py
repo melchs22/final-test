@@ -77,14 +77,24 @@ def save_kpis(supabase, kpis):
 def get_kpis(_supabase):
     try:
         response = _supabase.table("kpis").select("*").execute()
+        if not response.data:
+            st.warning("No KPI data found in database.")
+            return {}
         kpis = {}
         for row in response.data:
             metric = row["metric"]
             value = row["threshold"]
-            kpis[metric] = int(float(value)) if metric == "call_volume" else float(value) if value is not None else 0.0
+            try:
+                kpis[metric] = int(float(value)) if metric == "call_volume" else float(value) if value is not None else 0.0
+            except (ValueError, TypeError) as e:
+                st.warning(f"Invalid value for KPI {metric}: {value}. Setting to default.")
+                kpis[metric] = 0.0
+        st.write(f"DEBUG: Retrieved KPIs: {kpis}")
         return kpis
-    except Exception:
-        st.error("Error retrieving KPIs.")
+    except Exception as e:
+        st.error(f"Error retrieving KPIs: {str(e)}")
+        st.write(f"DEBUG: Exception in get_kpis: {str(e)}")
+        get_kpis.clear()  # Clear cache on error
         return {}
 
 # Save performance data
@@ -843,14 +853,15 @@ def main():
         return
 
     # Logout
-    if st.sidebar.button("Logout"):
-        st.session_state.user = None
-        st.session_state.role = None
-        st.session_state.authenticated = False
-        st.session_state.clear()
-        st.write("DEBUG: Session cleared on logout.")
-        st.rerun()
-
+   if st.sidebar.button("Logout"):
+    # Clear only specific session state keys
+    keys_to_clear = ['user', 'role', 'authenticated', 'data_updated', 'notifications_enabled', 'auto_refresh', 'cleared_chats']
+    for key in keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.session_state.theme = "light"  # Reset to default theme
+    st.write("DEBUG: Session cleared on logout.")
+    st.rerun()
     # Notifications
     if st.session_state.get("notifications_enabled", False):
         notifications = get_notifications(supabase)
@@ -1000,24 +1011,25 @@ def main():
                                         'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat', 'call_volume']
                     selected_metrics = st.multiselect("Select Metrics", available_metrics, default=['attendance', 'quality_score', 'csat', 'aht'])
                     if st.form_submit_button("Generate PDF Report"):
-                        if agents and selected_metrics and start_date <= end_date:
-                            pdf_buffer = generate_pdf_report(supabase, agents, start_date, end_date, selected_metrics)
-                            if pdf_buffer is not None:
-                                try:
-                                    st.download_button(
-                                        label="📥 Download PDF Report",
-                                        data=pdf_buffer,
-                                        file_name=f"agent_performance_report_{start_date}_to_{end_date}.pdf",
-                                        mime="application/pdf"
-                                    )
-                                    st.success("PDF report generated successfully!")
-                                except Exception as e:
-                                    st.error(f"Error creating download button: {str(e)}")
-                                    st.write(f"DEBUG: Exception in st.download_button: {str(e)}")
-                            else:
-                                st.error("Failed to generate PDF report. Check logs for details.")
-                        else:
-                            st.error("Please select at least one agent, one metric, and ensure the date range is valid.")
+    if agents and selected_metrics and start_date <= end_date:
+        pdf_buffer = generate_pdf_report(supabase, agents, start_date, end_date, selected_metrics)
+        if pdf_buffer is not None and pdf_buffer.getbuffer().nbytes > 0:
+            try:
+                st.download_button(
+                    label="📥 Download PDF Report",
+                    data=pdf_buffer.getvalue(),  # Use getvalue() for raw bytes
+                    file_name=f"agent_performance_report_{start_date}_to_{end_date}.pdf",
+                    mime="application/pdf",
+                    key=f"download_pdf_{uuid.uuid4()}"  # Unique key to avoid conflicts
+                )
+                st.success("PDF report generated successfully!")
+            except Exception as e:
+                st.error(f"Error creating download button: {str(e)}")
+                st.write(f"DEBUG: Exception in st.download_button: {str(e)}")
+        else:
+            st.error("Failed to generate PDF report. Buffer is empty or invalid.")
+    else:
+        st.error("Please select at least one agent, one metric, and ensure the date range is valid.")
 
         with tabs[3]:  # Set Goals
             st.header("🎯 Set Agent Goals")
