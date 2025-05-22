@@ -128,25 +128,33 @@ def save_performance(supabase, agent_name, data):
 
 # Get performance data with caching
 @st.cache_data(ttl=600)
-def get_performance(_supabase, agent_name=None):
+def get_feedback(_supabase, agent_name=None):
     try:
-        query = _supabase.table("performance").select("*")
+        query = _supabase.table("feedback").select("*")
         if agent_name:
             query = query.eq("agent_name", agent_name)
         response = query.execute()
         if response.data:
             df = pd.DataFrame(response.data)
-            numeric_cols = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate', 
-                           'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            if 'call_volume' in df.columns:
-                df['call_volume'] = pd.to_numeric(df['call_volume'], errors='coerce').fillna(0).astype(int)
+            # Convert created_at to datetime64[ns] in UTC
+            df['created_at'] = pd.to_datetime(df['created_at'], errors='coerce', utc=True)
+            # Convert response_timestamp as well
+            df['response_timestamp'] = pd.to_datetime(df['response_timestamp'], errors='coerce', utc=True)
+            # Filter out rows with invalid created_at
+            invalid_rows = df[df['created_at'].isna()]
+            if not invalid_rows.empty:
+                st.warning(f"Invalid 'created_at' values found for {agent_name or 'all agents'}: {invalid_rows.index.tolist()}")
+            df = df[df['created_at'].notna()].copy()
+            if df.empty:
+                st.warning(f"No valid feedback found for {agent_name or 'all agents'} after date validation.")
+            else:
+                st.write(f"DEBUG: get_feedback for {agent_name or 'all agents'}, created_at dtype: {df['created_at'].dtype}")
+                st.write(f"DEBUG: get_feedback created_at sample: {df['created_at'].head().tolist()}")
             return df
+        st.warning(f"No feedback found for {agent_name or 'all agents'}.")
         return pd.DataFrame()
-    except Exception:
-        st.error("Error retrieving performance data.")
+    except Exception as e:
+        st.error(f"Error retrieving feedback: {str(e)}")
         return pd.DataFrame()
 
 # Get Zoho agent data with caching
@@ -642,10 +650,10 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
     elements.append(Paragraph(f"Date Range: {start_date} to {end_date}", normal_style))
     elements.append(Spacer(1, 12))
 
-    # Convert start_date and end_date to pandas Timestamp
+    # Convert start_date and end_date to pandas Timestamp in UTC
     try:
-        start_datetime = pd.to_datetime(start_date).replace(hour=0, minute=0, second=0, microsecond=0)
-        end_datetime = pd.to_datetime(end_date).replace(hour=23, minute=59, second=59, microsecond=999999)
+        start_datetime = pd.to_datetime(start_date).replace(hour=0, minute=0, second=0, microsecond=0).tz_localize('UTC')
+        end_datetime = pd.to_datetime(end_date).replace(hour=23, minute=59, second=59, microsecond=999999).tz_localize('UTC')
         st.write(f"DEBUG: start_datetime: {start_datetime}, type: {type(start_datetime)}")
         st.write(f"DEBUG: end_datetime: {end_datetime}, type: {type(end_datetime)}")
     except Exception as e:
@@ -660,7 +668,7 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
         # Performance Metrics
         perf_df = get_performance(supabase, agent)
         if not perf_df.empty:
-            perf_df['date'] = pd.to_datetime(perf_df['date'], errors='coerce')
+            perf_df['date'] = pd.to_datetime(perf_df['date'], errors='coerce', utc=True)
             perf_df = perf_df[(perf_df['date'] >= start_datetime) & (perf_df['date'] <= end_datetime)]
             if not perf_df.empty:
                 perf_data = perf_df[metrics].mean().to_dict()
@@ -704,12 +712,10 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
         # Feedback
         feedback_df = get_feedback(supabase, agent)
         if not feedback_df.empty:
-            # Debug: Log created_at data
             st.write(f"DEBUG: Agent {agent} feedback_df['created_at'] dtype: {feedback_df['created_at'].dtype}")
             st.write(f"DEBUG: Agent {agent} feedback_df['created_at'] sample: {feedback_df['created_at'].head().tolist()}")
-            # Convert created_at to datetime, coercing errors to NaT
+            # Ensure created_at is datetime64[ns, UTC]
             feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at'], errors='coerce', utc=True)
-            # Filter out rows with NaT in created_at
             invalid_rows = feedback_df[feedback_df['created_at'].isna()]
             if not invalid_rows.empty:
                 st.warning(f"Invalid 'created_at' values found for agent {agent}: {invalid_rows.index.tolist()}")
@@ -718,8 +724,8 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
             if not feedback_df.empty:
                 try:
                     feedback_df = feedback_df[
-                        (feedback_df['created_at'] >= start_datetime.tz_localize('UTC')) & 
-                        (feedback_df['created_at'] <= end_datetime.tz_localize('UTC'))
+                        (feedback_df['created_at'] >= start_datetime) & 
+                        (feedback_df['created_at'] <= end_datetime)
                     ].copy()
                 except Exception as e:
                     st.error(f"Error filtering feedback for {agent}: {str(e)}")
@@ -746,9 +752,16 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
         canvas.drawString(50, 30, f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | BodaBoda Union")
         canvas.restoreState()
 
-    doc.build(elements, onFirstPage=add_footer, onLaterPages=add_footer)
-    buffer.seek(0)
-    return buffer
+    try:
+        doc.build(elements, onFirstPage=add_footer, onLaterPages=add_footer)
+        buffer.seek(0)
+        if buffer.getvalue() == b"":
+            st.error("PDF generation failed: Buffer is empty.")
+            return None
+        return buffer
+    except Exception as e:
+        st.error(f"Error generating PDF: {str(e)}")
+        return None
 
 # Main application
 def main():
@@ -1005,26 +1018,32 @@ def main():
                     st.plotly_chart(fig)
                 
                 # Custom Report Generation
-                st.subheader("Generate Custom Report")
-                with st.form("custom_report_form"):
-                    agents = st.multiselect("Select Agents", results['agent_name'].unique(), default=results['agent_name'].unique())
-                    start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=30))
-                    end_date = st.date_input("End Date", value=datetime.now())
-                    available_metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
-                                        'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat', 'call_volume']
-                    selected_metrics = st.multiselect("Select Metrics", available_metrics, default=['attendance', 'quality_score', 'csat', 'aht'])
-                    if st.form_submit_button("Generate PDF Report"):
-                        if agents and selected_metrics and start_date <= end_date:
-                            pdf_buffer = generate_pdf_report(supabase, agents, start_date, end_date, selected_metrics)
-                            st.download_button(
-                                label="📥 Download PDF Report",
-                                data=pdf_buffer,
-                                file_name=f"agent_performance_report_{start_date}_to_{end_date}.pdf",
-                                mime="application/pdf"
-                            )
-                            st.success("PDF report generated successfully!")
-                        else:
-                            st.error("Please select at least one agent, one metric, and ensure the date range is valid.")
+                # In the Manager Dashboard, Assessments tab, under "Generate Custom Report"
+with tabs[2]:  # Assessments
+    # ... (previous code for assessments tab) ...
+    st.subheader("Generate Custom Report")
+    with st.form("custom_report_form"):
+        agents = st.multiselect("Select Agents", results['agent_name'].unique(), default=results['agent_name'].unique())
+        start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=30))
+        end_date = st.date_input("End Date", value=datetime.now())
+        available_metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
+                            'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat', 'call_volume']
+        selected_metrics = st.multiselect("Select Metrics", available_metrics, default=['attendance', 'quality_score', 'csat', 'aht'])
+        if st.form_submit_button("Generate PDF Report"):
+            if agents and selected_metrics and start_date <= end_date:
+                pdf_buffer = generate_pdf_report(supabase, agents, start_date, end_date, selected_metrics)
+                if pdf_buffer is not None and pdf_buffer.getvalue():
+                    st.download_button(
+                        label="📥 Download PDF Report",
+                        data=pdf_buffer,
+                        file_name=f"agent_performance_report_{start_date}_to_{end_date}.pdf",
+                        mime="application/pdf"
+                    )
+                    st.success("PDF report generated successfully!")
+                else:
+                    st.error("Failed to generate PDF report.")
+            else:
+                st.error("Please select at least one agent, one metric, and ensure the date range is valid.")
 
         with tabs[3]:  # Set Goals
             st.header("🎯 Set Agent Goals")
