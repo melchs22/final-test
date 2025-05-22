@@ -642,6 +642,10 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
     elements.append(Paragraph(f"Date Range: {start_date} to {end_date}", normal_style))
     elements.append(Spacer(1, 12))
 
+    # Convert start_date and end_date to datetime objects with time set to midnight
+    start_datetime = pd.to_datetime(start_date).replace(hour=0, minute=0, second=0, microsecond=0)
+    end_datetime = pd.to_datetime(end_date).replace(hour=23, minute=59, second=59, microsecond=999999)
+
     for agent in agents:
         # Agent Section
         elements.append(Paragraph(f"Agent: {agent}", subtitle_style))
@@ -650,8 +654,8 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
         # Performance Metrics
         perf_df = get_performance(supabase, agent)
         if not perf_df.empty:
-            perf_df['date'] = pd.to_datetime(perf_df['date'])
-            perf_df = perf_df[(perf_df['date'] >= pd.to_datetime(start_date)) & (perf_df['date'] <= pd.to_datetime(end_date))]
+            perf_df['date'] = pd.to_datetime(perf_df['date'], errors='coerce')
+            perf_df = perf_df[(perf_df['date'] >= start_datetime) & (perf_df['date'] <= end_datetime)]
             if not perf_df.empty:
                 perf_data = perf_df[metrics].mean().to_dict()
                 table_data = [['Metric', 'Value']] + [
@@ -694,11 +698,15 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
         # Feedback
         feedback_df = get_feedback(supabase, agent)
         if not feedback_df.empty:
-            feedback_df = feedback_df[pd.to_datetime(feedback_df['created_at']).between(pd.to_datetime(start_date), pd.to_datetime(end_date))]
+            feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at'], errors='coerce')
+            feedback_df = feedback_df[
+                (feedback_df['created_at'] >= start_datetime) & 
+                (feedback_df['created_at'] <= end_datetime)
+            ].copy()
             if not feedback_df.empty:
                 elements.append(Paragraph("Feedback", normal_style))
                 for _, feedback in feedback_df.iterrows():
-                    elements.append(Paragraph(f"Feedback: {feedback['message']} (Submitted on {feedback['created_at'][:10]})", normal_style))
+                    elements.append(Paragraph(f"Feedback: {feedback['message']} (Submitted on {feedback['created_at'].strftime('%Y-%m-%d')})", normal_style))
                     if pd.notnull(feedback['manager_response']):
                         elements.append(Paragraph(f"Response: {feedback['manager_response']} (Responded on {feedback['response_timestamp'][:10]})", normal_style))
                 elements.append(Spacer(1, 12))
