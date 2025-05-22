@@ -870,13 +870,18 @@ def main():
         return
 
     # Logout
-    if st.sidebar.button("Logout"):
-        st.session_state.user = None
-        st.session_state.role = None
-        st.session_state.authenticated = False
-        st.session_state.clear()
-        st.write("DEBUG: Session cleared on logout.")
-        st.rerun()
+    with st.sidebar:
+        if st.button("Logout"):
+            st.session_state.user = None
+            st.session_state.role = None
+            st.session_state.authenticated = False
+            st.session_state.clear()
+            st.write("DEBUG: Session cleared on logout.")
+            st.rerun()
+        if st.button("Clear Cache"):
+            st.cache_data.clear()
+            st.success("Cache cleared!")
+            st.rerun()
 
     # Notifications
     if st.session_state.get("notifications_enabled", False):
@@ -911,7 +916,7 @@ def main():
     except Exception:
         st.warning("Failed to load company logo.")
 
-    # Manager Dashboard
+    # Role-based Dashboards
     if st.session_state.role == "Manager":
         st.title("📊 Manager Dashboard")
         performance_df = get_performance(supabase)
@@ -1018,32 +1023,29 @@ def main():
                     st.plotly_chart(fig)
                 
                 # Custom Report Generation
-                # In the Manager Dashboard, Assessments tab, under "Generate Custom Report"
-with tabs[2]:  # Assessments
-    # ... (previous code for assessments tab) ...
-    st.subheader("Generate Custom Report")
-    with st.form("custom_report_form"):
-        agents = st.multiselect("Select Agents", results['agent_name'].unique(), default=results['agent_name'].unique())
-        start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=30))
-        end_date = st.date_input("End Date", value=datetime.now())
-        available_metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
-                            'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat', 'call_volume']
-        selected_metrics = st.multiselect("Select Metrics", available_metrics, default=['attendance', 'quality_score', 'csat', 'aht'])
-        if st.form_submit_button("Generate PDF Report"):
-            if agents and selected_metrics and start_date <= end_date:
-                pdf_buffer = generate_pdf_report(supabase, agents, start_date, end_date, selected_metrics)
-                if pdf_buffer is not None and pdf_buffer.getvalue():
-                    st.download_button(
-                        label="📥 Download PDF Report",
-                        data=pdf_buffer,
-                        file_name=f"agent_performance_report_{start_date}_to_{end_date}.pdf",
-                        mime="application/pdf"
-                    )
-                    st.success("PDF report generated successfully!")
-                else:
-                    st.error("Failed to generate PDF report.")
-            else:
-                st.error("Please select at least one agent, one metric, and ensure the date range is valid.")
+                st.subheader("Generate Custom Report")
+                with st.form("custom_report_form"):
+                    agents = st.multiselect("Select Agents", results['agent_name'].unique(), default=results['agent_name'].unique())
+                    start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=30))
+                    end_date = st.date_input("End Date", value=datetime.now())
+                    available_metrics = ['attendance', 'quality_score', 'product_knowledge', 'contact_success_rate',
+                                        'onboarding', 'reporting', 'talk_time', 'resolution_rate', 'aht', 'csat', 'call_volume']
+                    selected_metrics = st.multiselect("Select Metrics", available_metrics, default=['attendance', 'quality_score', 'csat', 'aht'])
+                    if st.form_submit_button("Generate PDF Report"):
+                        if agents and selected_metrics and start_date <= end_date:
+                            pdf_buffer = generate_pdf_report(supabase, agents, start_date, end_date, selected_metrics)
+                            if pdf_buffer is not None and pdf_buffer.getvalue():
+                                st.download_button(
+                                    label="📥 Download PDF Report",
+                                    data=pdf_buffer,
+                                    file_name=f"agent_performance_report_{start_date}_to_{end_date}.pdf",
+                                    mime="application/pdf"
+                                )
+                                st.success("PDF report generated successfully!")
+                            else:
+                                st.error("Failed to generate PDF report.")
+                        else:
+                            st.error("Please select at least one agent, one metric, and ensure the date range is valid.")
 
         with tabs[3]:  # Set Goals
             st.header("🎯 Set Agent Goals")
@@ -1253,7 +1255,6 @@ with tabs[2]:  # Assessments
                 else:
                     st.info("No posts in this category.")
 
-    # Agent Dashboard
     elif st.session_state.role == "Agent":
         st.title(f"👤 Agent Dashboard - {st.session_state.user}")
         st.write(f"DEBUG: Notifications Enabled: {st.session_state.get('notifications_enabled', False)}")
@@ -1362,7 +1363,7 @@ with tabs[2]:  # Assessments
                         supabase.table("feedback").insert({
                             "agent_name": st.session_state.user,
                             "message": feedback_text,
-                            "created_at": datetime.now().isoformat()
+                            "created_at": datetime.now(timezone.utc).isoformat()
                         }).execute()
                         if st.session_state.get("notifications_enabled", False):
                             managers = supabase.table("users").select("id").eq("role", "Manager").execute()
