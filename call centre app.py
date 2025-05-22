@@ -378,7 +378,7 @@ def award_badge(supabase, agent_name, badge_name, description, awarded_by):
             "awarded_by": awarded_by,
             "earned_at": datetime.now().isoformat()
         }).execute()
-        if st.session_state.get("notifications_enabled", False):
+        if st.session_state.get("notifications_enabled", True):
             agent = supabase.table("users").select("id").eq("name", agent_name).execute()
             if agent.data:
                 supabase.table("notifications").insert({
