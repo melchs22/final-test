@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
 from reportlab.lib.pagesizes import letter
@@ -28,7 +29,7 @@ def init_supabase() -> Client:
 
 def check_db(supabase: Client) -> bool:
     try:
-        tables = ["users", "performance", "kpis", "goals", "feedback", "badges", "notifications"]
+        tables = ["users", "performance", "kpis", "goals", "feedback", "badges", "notifications", "audio_assessments", "forum_posts", "zoho_tickets"]
         for table in tables:
             response = supabase.table(table).select("*").limit(1).execute()
             if not response.data:
@@ -235,7 +236,8 @@ def get_leaderboard(_supabase: Client) -> pd.DataFrame:
     try:
         performance_df = get_performance(_supabase)
         if not performance_df.empty:
-            return performance_df.groupby("agent_name")[['overall_score', 'call_volume']].mean().reset_index()
+            leaderboard = performance_df.groupby("agent_name")[['overall_score', 'call_volume']].mean().reset_index()
+            return leaderboard
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Error retrieving leaderboard: {str(e)}")
@@ -330,17 +332,37 @@ def assess_performance(performance_df: pd.DataFrame, kpis: dict) -> pd.DataFrame
         st.error(f"Error assessing performance: {str(e)}")
         return pd.DataFrame()
 
-def plot_performance_chart(supabase: Client, agent: str = None, metrics: list = None) -> px.Figure:
+def plot_performance_chart(supabase: Client, agent: str = None, metrics: list = None) -> go.Figure:
     try:
         df = get_performance(supabase, agent)
         if df.empty:
+            st.warning(f"No performance data available to plot for {agent or 'all agents'}.")
             return None
         if metrics:
-            df = df[metrics + ['agent_name']]
-        fig = px.line(df, x='date', y=metrics or df.columns.drop(['agent_name', 'date']), color='agent_name')
+            available_metrics = [m for m in metrics if m in df.columns and m not in ['agent_name', 'date']]
+            if not available_metrics:
+                st.error(f"Selected metrics {metrics} not found in performance data.")
+                return None
+            df = df[['agent_name', 'date'] + available_metrics]
+        else:
+            available_metrics = [col for col in df.columns if col not in ['agent_name', 'date']]
+            if not available_metrics:
+                st.error("No valid metrics available to plot.")
+                return None
+            df = df[['agent_name', 'date'] + available_metrics]
+        fig = px.line(df, x='date', y=available_metrics, color='agent_name', 
+                      title=f"Performance Metrics for {agent or 'All Agents'}",
+                      labels={'date': 'Date', 'value': 'Metric Value', 'variable': 'Metric'})
+        fig.update_layout(
+            xaxis_title="Date",
+            yaxis_title="Metric Value",
+            legend_title="Agent",
+            hovermode="x unified"
+        )
         return fig
     except Exception as e:
         st.error(f"Error plotting performance chart: {str(e)}")
+        logger.error(f"Plotting error: {str(e)}")
         return None
 
 def setup_realtime(supabase: Client):
@@ -926,7 +948,7 @@ def main():
                 posts_df = get_forum_posts(supabase, category)
                 if not posts_df.empty:
                     for _, post in posts_df.iterrows():
-                        badge_display = f" 🏅x{post['badge_count']}" if post['badge_count'] > 0 else ""
+                        badge_display = f" 🏅x{post['badge_count']}" if post.get('badge_count', 0) > 0 else ""
                         st.markdown(f"**{post['user_name']}{badge_display}** ({post['created_at'][:10]}): {post['message']}")
                 else:
                     st.info("No posts in this category.")
@@ -1148,7 +1170,8 @@ def main():
                 question = st.text_area("Ask a question about improving your performance (e.g., 'How can I improve my CSAT?')")
                 if st.form_submit_button("Ask"):
                     if question.strip():
-                        answer = get_coaching_tips(supabase, st.session_state.user)  # Simplified for example
+                        tips = get_coaching_tips(supabase, st.session_state.user)
+                        answer = "\n".join([f"{tip['metric'].replace('_', ' ').title()}: {tip['tip']}" for tip in tips]) if tips else "You're doing great! Keep up the good work."
                         st.markdown(f"**Coach Response**: {answer}")
                         st.session_state.last_coach_answer = answer
                     else:
@@ -1194,7 +1217,7 @@ def main():
                 posts_df = get_forum_posts(supabase, category)
                 if not posts_df.empty:
                     for _, post in posts_df.iterrows():
-                        badge_display = f" 🏅x{post['badge_count']}" if post['badge_count'] > 0 else ""
+                        badge_display = f" 🏅x{post['badge_count']}" if post.get('badge_count', 0) > 0 else ""
                         st.markdown(f"**{post['user_name']}{badge_display}** ({post['created_at'][:10]}): {post['message']}")
                 else:
                     st.info("No posts in this category.")
