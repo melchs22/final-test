@@ -698,7 +698,14 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
         # Feedback
         feedback_df = get_feedback(supabase, agent)
         if not feedback_df.empty:
+            # Convert created_at to datetime, coercing errors to NaT
             feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at'], errors='coerce')
+            # Debug: Log problematic values
+            if feedback_df['created_at'].isna().any():
+                st.warning(f"Invalid 'created_at' values found for agent {agent}: {feedback_df[feedback_df['created_at'].isna()]['created_at'].index.tolist()}")
+            # Filter out rows with NaT in created_at
+            feedback_df = feedback_df[feedback_df['created_at'].notna()].copy()
+            # Apply date range filter
             feedback_df = feedback_df[
                 (feedback_df['created_at'] >= start_datetime) & 
                 (feedback_df['created_at'] <= end_datetime)
@@ -708,7 +715,10 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
                 for _, feedback in feedback_df.iterrows():
                     elements.append(Paragraph(f"Feedback: {feedback['message']} (Submitted on {feedback['created_at'].strftime('%Y-%m-%d')})", normal_style))
                     if pd.notnull(feedback['manager_response']):
-                        elements.append(Paragraph(f"Response: {feedback['manager_response']} (Responded on {feedback['response_timestamp'][:10]})", normal_style))
+                        # Ensure response_timestamp is formatted correctly
+                        response_timestamp = pd.to_datetime(feedback['response_timestamp'], errors='coerce')
+                        response_date = response_timestamp.strftime('%Y-%m-%d') if pd.notnull(response_timestamp) else "Unknown"
+                        elements.append(Paragraph(f"Response: {feedback['manager_response']} (Responded on {response_date})", normal_style))
                 elements.append(Spacer(1, 12))
 
         elements.append(Spacer(1, 20))
