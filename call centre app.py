@@ -642,9 +642,15 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
     elements.append(Paragraph(f"Date Range: {start_date} to {end_date}", normal_style))
     elements.append(Spacer(1, 12))
 
-    # Convert start_date and end_date to datetime objects with time set to midnight
-    start_datetime = pd.to_datetime(start_date).replace(hour=0, minute=0, second=0, microsecond=0)
-    end_datetime = pd.to_datetime(end_date).replace(hour=23, minute=59, second=59, microsecond=999999)
+    # Convert start_date and end_date to pandas Timestamp
+    try:
+        start_datetime = pd.to_datetime(start_date).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_datetime = pd.to_datetime(end_date).replace(hour=23, minute=59, second=59, microsecond=999999)
+        st.write(f"DEBUG: start_datetime: {start_datetime}, type: {type(start_datetime)}")
+        st.write(f"DEBUG: end_datetime: {end_datetime}, type: {type(end_datetime)}")
+    except Exception as e:
+        st.error(f"Error converting date range: {str(e)}")
+        return buffer
 
     for agent in agents:
         # Agent Section
@@ -698,27 +704,37 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
         # Feedback
         feedback_df = get_feedback(supabase, agent)
         if not feedback_df.empty:
+            # Debug: Log created_at data
+            st.write(f"DEBUG: Agent {agent} feedback_df['created_at'] dtype: {feedback_df['created_at'].dtype}")
+            st.write(f"DEBUG: Agent {agent} feedback_df['created_at'] sample: {feedback_df['created_at'].head().tolist()}")
             # Convert created_at to datetime, coercing errors to NaT
-            feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at'], errors='coerce')
-            # Debug: Log problematic values
-            if feedback_df['created_at'].isna().any():
-                st.warning(f"Invalid 'created_at' values found for agent {agent}: {feedback_df[feedback_df['created_at'].isna()]['created_at'].index.tolist()}")
+            feedback_df['created_at'] = pd.to_datetime(feedback_df['created_at'], errors='coerce', utc=True)
             # Filter out rows with NaT in created_at
-            feedback_df = feedback_df[feedback_df['created_at'].notna()].copy()
+            invalid_rows = feedback_df[feedback_df['created_at'].isna()]
+            if not invalid_rows.empty:
+                st.warning(f"Invalid 'created_at' values found for agent {agent}: {invalid_rows.index.tolist()}")
+                feedback_df = feedback_df[feedback_df['created_at'].notna()].copy()
             # Apply date range filter
-            feedback_df = feedback_df[
-                (feedback_df['created_at'] >= start_datetime) & 
-                (feedback_df['created_at'] <= end_datetime)
-            ].copy()
+            if not feedback_df.empty:
+                try:
+                    feedback_df = feedback_df[
+                        (feedback_df['created_at'] >= start_datetime.tz_localize('UTC')) & 
+                        (feedback_df['created_at'] <= end_datetime.tz_localize('UTC'))
+                    ].copy()
+                except Exception as e:
+                    st.error(f"Error filtering feedback for {agent}: {str(e)}")
+                    feedback_df = pd.DataFrame()  # Fallback to empty DataFrame
             if not feedback_df.empty:
                 elements.append(Paragraph("Feedback", normal_style))
                 for _, feedback in feedback_df.iterrows():
                     elements.append(Paragraph(f"Feedback: {feedback['message']} (Submitted on {feedback['created_at'].strftime('%Y-%m-%d')})", normal_style))
                     if pd.notnull(feedback['manager_response']):
-                        # Ensure response_timestamp is formatted correctly
-                        response_timestamp = pd.to_datetime(feedback['response_timestamp'], errors='coerce')
+                        response_timestamp = pd.to_datetime(feedback['response_timestamp'], errors='coerce', utc=True)
                         response_date = response_timestamp.strftime('%Y-%m-%d') if pd.notnull(response_timestamp) else "Unknown"
                         elements.append(Paragraph(f"Response: {feedback['manager_response']} (Responded on {response_date})", normal_style))
+                elements.append(Spacer(1, 12))
+            else:
+                elements.append(Paragraph("Feedback: No valid feedback available for this period.", normal_style))
                 elements.append(Spacer(1, 12))
 
         elements.append(Spacer(1, 20))
