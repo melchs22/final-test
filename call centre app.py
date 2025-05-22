@@ -650,7 +650,7 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
         # Performance Metrics
         perf_df = get_performance(supabase, agent)
         if not perf_df.empty:
-            perf_df['date'] = pd.to_datetime(perf_df['date'])
+            perf_df['date'] = pd.to_datetime(perf_df['date'], errors='coerce')
             perf_df = perf_df[(perf_df['date'] >= pd.to_datetime(start_date)) & (perf_df['date'] <= pd.to_datetime(end_date))]
             if not perf_df.empty:
                 perf_data = perf_df[metrics].mean().to_dict()
@@ -691,17 +691,17 @@ def generate_pdf_report(supabase, agents, start_date, end_date, metrics):
                 elements.append(Paragraph(f"{badge['badge_name']}: {badge['description']} (Earned on {badge['earned_at'][:10]})", normal_style))
             elements.append(Spacer(1, 12))
 
-        # Feedback
+        # Feedback (No Date Filter)
         feedback_df = get_feedback(supabase, agent)
         if not feedback_df.empty:
-            feedback_df = feedback_df[pd.to_datetime(feedback_df['created_at']).between(pd.to_datetime(start_date), pd.to_datetime(end_date))]
-            if not feedback_df.empty:
-                elements.append(Paragraph("Feedback", normal_style))
-                for _, feedback in feedback_df.iterrows():
-                    elements.append(Paragraph(f"Feedback: {feedback['message']} (Submitted on {feedback['created_at'][:10]})", normal_style))
-                    if pd.notnull(feedback['manager_response']):
-                        elements.append(Paragraph(f"Response: {feedback['manager_response']} (Responded on {feedback['response_timestamp'][:10]})", normal_style))
-                elements.append(Spacer(1, 12))
+            elements.append(Paragraph("Feedback", normal_style))
+            for _, feedback in feedback_df.iterrows():
+                created_at = pd.to_datetime(feedback['created_at'], errors='coerce').strftime('%Y-%m-%d') if pd.notnull(feedback['created_at']) else 'Unknown Date'
+                elements.append(Paragraph(f"Feedback: {feedback['message']} (Submitted on {created_at})", normal_style))
+                if pd.notnull(feedback['manager_response']):
+                    response_timestamp = pd.to_datetime(feedback['response_timestamp'], errors='coerce').strftime('%Y-%m-%d') if pd.notnull(feedback['response_timestamp']) else 'Unknown Date'
+                    elements.append(Paragraph(f"Response: {feedback['manager_response']} (Responded on {response_timestamp})", normal_style))
+            elements.append(Spacer(1, 12))
 
         elements.append(Spacer(1, 20))
 
