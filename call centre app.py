@@ -586,6 +586,20 @@ def upload_audio(supabase, agent_name, audio_file, manager_name):
         st.error("Error uploading audio.")
         return False
 
+# Delete audio
+def delete_audio(supabase, audio_id, file_path):
+    try:
+        # Extract the file name from the audio_url (removing the bucket prefix if necessary)
+        file_name = file_path.split('/')[-1]
+        # Delete from Supabase storage
+        supabase.storage.from_("call-audio").remove([file_name])
+        # Delete from audio_assessments table
+        supabase.table("audio_assessments").delete().eq("id", audio_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error deleting audio: {str(e)}")
+        return False
+
 # Get audio assessments with caching
 @st.cache_data(ttl=600)
 def get_audio_assessments(_supabase, agent_name=None):
@@ -1153,13 +1167,21 @@ def main():
                         st.audio(row['audio_url'], format="audio/mp3")
                         st.write(f"Uploaded by: {row['uploaded_by']}")
                         notes = st.text_area("Assessment Notes", value=row['assessment_notes'], key=f"notes_{row['id']}")
-                        if st.button("Save Notes", key=f"save_notes_{row['id']}"):
-                            if update_assessment_notes(supabase, row['id'], notes):
-                                get_audio_assessments.clear()
-                                st.success("Notes saved!")
-                                st.rerun()
-                            else:
-                                st.error("Failed to save notes.")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("Save Notes", key=f"save_notes_{row['id']}"):
+                                if update_assessment_notes(supabase, row['id'], notes):
+                                    get_audio_assessments.clear()
+                                    st.success("Notes saved!")
+                                    st.rerun()
+                        with col2:
+                            if st.button("Delete Audio", key=f"delete_audio_{row['id']}"):
+                                if delete_audio(supabase, row['id'], row['audio_url']):
+                                    get_audio_assessments.clear()
+                                    st.success(f"Audio for {row['agent_name']} deleted!")
+                                    st.rerun()
+                                else:
+                                    st.error("Failed to delete audio.")
                 st.dataframe(audio_df[['agent_name', 'upload_timestamp', 'uploaded_by', 'assessment_notes']])
                 st.download_button(label="📥 Download Audio Assessments", data=audio_df.to_csv(index=False), file_name="audio_assessments.csv")
             else:
@@ -1334,6 +1356,8 @@ def main():
                 st.download_button(label="📥 Download Feedback", data=feedback_df.to_csv(index=False), file_name="feedback_history.csv")
             else:
                 st.info("No feedback submitted.")
+
+       
 
         with tabs[3]:  # Tickets
             st.header("📊 Zoho Ticket Data")
