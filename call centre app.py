@@ -846,7 +846,7 @@ def main():
         st.rerun()
 
     # Notifications
-    if st.session_state.get("notifications_enabled", False):
+    if st.session_state.get("notifications_enabled", True):
         notifications = get_notifications(supabase)
         with st.sidebar.expander(f"🔔 Notifications ({len(notifications)})"):
             if notifications.empty:
@@ -1433,7 +1433,7 @@ def main():
                 unsafe_allow_html=True
             )
             st.markdown("---")
-            st.success("✅ After submitting your form, thank you for your dedication today!")
+            st.success("✅Thank you for your dedication today!")
             st.caption("© 2025 BodaBoda Union | Powered by Love and Togetherness 💚")
 
         with tabs[6]:  # Ask the Coach
